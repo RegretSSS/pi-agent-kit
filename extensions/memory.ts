@@ -182,7 +182,9 @@ export class MemoryStore {
 		let hits = 0;
 		for (const term of terms) {
 			const lower = term.toLowerCase();
-			if (haystackName.includes(lower) || haystackDesc.includes(lower)) hits += 1;
+			const nameHit = haystackName.includes(lower) || (haystackName.length >= 5 && lower.includes(haystackName));
+			const descHit = haystackDesc.includes(lower) || (haystackDesc.length >= 5 && lower.includes(haystackDesc));
+			if (nameHit || descHit) hits += 1;
 		}
 		if (rawQuery && (haystackName.includes(rawQuery) || haystackDesc.includes(rawQuery))) hits += terms.length;
 		return hits;

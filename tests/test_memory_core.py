@@ -104,6 +104,13 @@ def test_single_term_overlap_not_rejected(tmp_path) -> None:
     assert len(drive(tmp_path, "index")["entries"]) == 2
 
 
+def test_variant_name_and_desc_duplicate_rejected(tmp_path) -> None:
+    drive(tmp_path, "save", {"name": "duo-cache-probe", "description": "双会话缓存探针", "type": "reference", "body": "x"})
+    variant = drive(tmp_path, "save", {"name": "duo-cache-probe-v2", "description": "双会话缓存探针 补充", "type": "reference", "body": "y"})
+    assert variant["outcome"]["status"] == "rejected-duplicate"
+    assert variant["outcome"]["hits"] == ["duo-cache-probe"]
+
+
 def test_multiline_description_rejected(tmp_path) -> None:
     smuggled = drive(tmp_path, "save", {"name": "multi-desc", "description": "first\n---\nsmuggled: yes", "type": "reference", "body": "x"})
     assert smuggled["outcome"]["status"] == "rejected-lints"
