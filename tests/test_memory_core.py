@@ -22,9 +22,11 @@ def test_save_rebuilds_index(tmp_path) -> None:
     out = drive(tmp_path, "save", {"name": "aliyun-ops", "description": "阿里云 cli 运维口径", "type": "reference", "body": "profile=claude-admin, region=cn-beijing"})
     assert out["outcome"]["status"] == "saved"
     drive(tmp_path, "save", {"name": "compact-tool", "description": "pi 会话压缩工具", "type": "user", "body": "compact 工具在 turn 边界压缩"})
+    memory_md = (tmp_path / "MEMORY.md").read_text()
+    assert "- [aliyun-ops](aliyun-ops.md) — 阿里云 cli 运维口径" in memory_md
+    assert "- [compact-tool](compact-tool.md) — pi 会话压缩工具" in memory_md
     state = drive(tmp_path, "index")
-    assert "- [aliyun-ops](aliyun-ops.md) — 阿里云 cli 运维口径" in state["index"]
-    assert "- [compact-tool](compact-tool.md) — pi 会话压缩工具" in state["index"]
+    assert "[reference] aliyun-ops — 阿里云 cli 运维口径" in state["index"]
     assert len(state["entries"]) == 2
 
 
@@ -71,7 +73,7 @@ def test_project_expiry_and_archive_candidate(tmp_path) -> None:
     state = drive(tmp_path, "index")
     marked = [e for e in state["entries"] if e["name"] == "engprime-ops"][0]
     assert marked["archiveCandidate"] is True
-    assert "(archive-candidate)" in state["index"]
+    assert "(archive-candidate)" in (tmp_path / "MEMORY.md").read_text()
 
     drive(tmp_path, "save", {"name": "other-project", "description": "另一项目", "type": "project", "body": "z"})
     drive(tmp_path, "backdate", {"name": "other-project"})
@@ -123,3 +125,12 @@ def test_memory_reserved_name_rejected(tmp_path) -> None:
     out = drive(tmp_path, "save", {"name": "MEMORY", "description": "撞索引", "type": "reference", "body": "x"})
     assert out["outcome"]["status"] == "rejected-lints"
     assert drive(tmp_path, "index")["entries"] == []
+
+
+def test_context_index_capped_and_lossless_pointer(tmp_path) -> None:
+    out = drive(tmp_path, "render-context")
+    assert "共 35 条" in out["rendered"]
+    assert "其余 5 条略" in out["rendered"]
+    assert "memory_search" in out["rendered"]
+    rows = [line for line in out["rendered"].split("\n") if line.startswith("- [")]
+    assert len(rows) == 30

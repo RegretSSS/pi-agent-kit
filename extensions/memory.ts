@@ -11,6 +11,7 @@ const RULE_SHAPED = [/看到[^。\n]{1,40}就\s*(fail|拒绝|报错|禁)/, /(一
 const PROJECT_TTL_MS = 30 * 24 * 3600 * 1000;
 const BODY_PREVIEW_CHARS = 600;
 const CANDIDATES_MAX_BYTES = 5 * 1024 * 1024;
+const CONTEXT_TOP_K = 30;
 const LINT_TEMPLATE = [
 	"这条是判定性知识(可写成「看到 X 就 fail」),不该进 memory。分流去 lints/:",
 	"1. 在所在仓新建 lints/<rule_name>.py,一规则一文件,接入 scripts/run-lints.sh",
@@ -287,17 +288,35 @@ export class MemoryStore {
 		await appendFile(path, JSON.stringify(record) + "\n", "utf8");
 	}
 
-	async readIndexText(): Promise<string | null> {
+	renderContextIndex(entries: MemoryEntry[]): string {
+		const header = `持久跨会话记忆可用。下方为高频条目(共 ${entries.length} 条);未列出条目与正文用 memory_search 按需检索,不要凭空假设没有。`;
+		const refs = new Map((this.open().prepare("SELECT name, last_referenced FROM memory_refs").all() as RefRow[]).map((row) => [row.name, row.last_referenced]));
+		const ranked = [...entries].sort((a, b) => {
+			const ra = refs.get(a.name) ?? 0;
+			const rb = refs.get(b.name) ?? 0;
+			if (ra !== rb) return rb - ra;
+			return a.name.localeCompare(b.name);
+		});
+		const shown = ranked.slice(0, CONTEXT_TOP_K);
+		const rows = shown.map((entry) => `- [${entry.type}] ${entry.name} — ${entry.description}`);
+		if (ranked.length > shown.length) {
+			rows.push(`(其余 ${ranked.length - shown.length} 条略,用 memory_search 检索)`);
+		}
+		return [header, "", ...rows].join("\n");
+	}
+
+	async contextIndexText(): Promise<string | null> {
 		const indexPath = join(this.root, "MEMORY.md");
+		let info;
 		try {
-			const info = await stat(indexPath);
-			if (this.indexMtimeMs === info.mtimeMs && this.indexText !== null) return this.indexText;
-			this.indexMtimeMs = info.mtimeMs;
-			this.indexText = await readFile(indexPath, "utf8");
-			return this.indexText;
+			info = await stat(indexPath);
 		} catch {
 			return null;
 		}
+		if (this.indexMtimeMs === info.mtimeMs && this.indexText !== null) return this.indexText;
+		this.indexMtimeMs = info.mtimeMs;
+		this.indexText = this.renderContextIndex(await this.listEntries());
+		return this.indexText;
 	}
 }
 
@@ -375,7 +394,7 @@ export default async function (pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", async (event) => {
-		const index = await store.readIndexText();
+		const index = await store.contextIndexText();
 		if (!index) return;
 		event.systemPromptOptions.sections["agent-memory-index"] = index;
 	});

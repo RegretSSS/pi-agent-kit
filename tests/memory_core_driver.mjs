@@ -18,8 +18,13 @@ switch (scenario) {
 		break;
 	}
 	case "index": {
-		out.index = await store.readIndexText();
+		out.index = await store.contextIndexText();
 		out.entries = (await store.listEntries(true)).map((e) => ({ name: e.name, type: e.type, expiryAt: e.expiryAt ?? null, archiveCandidate: e.archiveCandidate ?? false }));
+		break;
+	}
+	case "render-context": {
+		const fake = Array.from({ length: 35 }, (_, i) => ({ name: "n" + i, description: "d" + i, type: "reference", file: `n${i}.md`, body: "b" }));
+		out.rendered = store.renderContextIndex(fake);
 		break;
 	}
 	case "backdate": {
