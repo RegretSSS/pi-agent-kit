@@ -112,7 +112,7 @@ export class MemoryStore {
 	private open(): DatabaseSync {
 		if (this.db) return this.db;
 		this.db = new DatabaseSync(join(this.root, ".index.db"));
-		this.db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(name, description, tokenize='trigram')");
+		this.db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(name, description, body, tokenize='trigram')");
 		this.db.exec("CREATE TABLE IF NOT EXISTS memory_refs (name TEXT PRIMARY KEY, last_referenced INTEGER NOT NULL)");
 		return this.db;
 	}
@@ -140,9 +140,10 @@ export class MemoryStore {
 		const entries = await this.listEntries(true);
 		db.exec("BEGIN");
 		try {
-			db.exec("DELETE FROM memory_fts");
-			const insert = db.prepare("INSERT INTO memory_fts(name, description) VALUES (?, ?)");
-			for (const entry of entries) insert.run(entry.name, entry.description);
+			db.exec("DROP TABLE IF EXISTS memory_fts");
+			db.exec("CREATE VIRTUAL TABLE memory_fts USING fts5(name, description, body, tokenize='trigram')");
+			const insert = db.prepare("INSERT INTO memory_fts(name, description, body) VALUES (?, ?, ?)");
+			for (const entry of entries) insert.run(entry.name, entry.description, entry.body);
 			db.exec("COMMIT");
 		} catch (error) {
 			db.exec("ROLLBACK");
@@ -158,10 +159,11 @@ export class MemoryStore {
 		return entries;
 	}
 
-	ftsNames(terms: string[]): Set<string> {
+	ftsNames(terms: string[], columns: string[] = ["name", "description", "body"]): Set<string> {
 		if (terms.length === 0) return new Set();
 		const db = this.open();
-		const rows = db.prepare("SELECT name FROM memory_fts WHERE memory_fts MATCH ?").all(buildFtsQuery(terms)) as { name: string }[];
+		const prefix = columns.length > 0 ? `{${columns.join(" ")}} : ` : "";
+		const rows = db.prepare("SELECT name FROM memory_fts WHERE memory_fts MATCH ?").all(prefix + buildFtsQuery(terms)) as { name: string }[];
 		return new Set(rows.map((row) => row.name));
 	}
 
@@ -208,7 +210,7 @@ export class MemoryStore {
 		const existing = entries.find((entry) => entry.name === name);
 		if (!existing) {
 			const query = `${name} ${description}`;
-			const duplicates = await this.findDuplicates(query, entries);
+			const duplicates = await this.findDuplicates(query, entries, ["name", "description"]);
 			if (duplicates.length > 0) {
 				return { status: "rejected-duplicate", hits: duplicates.slice(0, 3) };
 			}
@@ -221,10 +223,10 @@ export class MemoryStore {
 		return { status: "saved", entry, updated: Boolean(existing) };
 	}
 
-	async findDuplicates(query: string, entries: MemoryEntry[]): Promise<SearchHit[]> {
+	async findDuplicates(query: string, entries: MemoryEntry[], columns: string[] = ["name", "description", "body"]): Promise<SearchHit[]> {
 		const terms = splitTerms(query);
 		const rawQuery = query.trim().toLowerCase();
-		const ftsHit = this.ftsNames(terms);
+		const ftsHit = this.ftsNames(terms, columns);
 		const duplicates: SearchHit[] = [];
 		for (const entry of entries) {
 			const termHits = this.countTermHits(entry, terms, rawQuery);

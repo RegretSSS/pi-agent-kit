@@ -49,7 +49,7 @@ def test_rule_shaped_and_problem_rejected(tmp_path) -> None:
 
 
 def test_search_chinese_and_substring(tmp_path) -> None:
-    drive(tmp_path, "save", {"name": "aliyun-ops", "description": "阿里云 cli 运维口径", "type": "reference", "body": "profile=claude-admin"})
+    drive(tmp_path, "save", {"name": "aliyun-ops", "description": "阿里云 cli 口径", "type": "reference", "body": "profile=claude-admin,运维口径:region cn-beijing"})
     drive(tmp_path, "save", {"name": "compact-tool", "description": "pi 会话压缩工具", "type": "user", "body": "compact 工具"})
     assert drive(tmp_path, "search", {"query": "运维口径"})["names"] == ["aliyun-ops"]
     assert drive(tmp_path, "search", {"query": "aliyun"})["names"] == ["aliyun-ops"]
