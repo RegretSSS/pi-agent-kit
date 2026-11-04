@@ -50,3 +50,5 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **R-4 shrink 环回的残余竞态接受为边界**:log 截尾(truncate)与子进程 O_APPEND 写、跨进程双 shrink 之间仍有毫秒级窗口(尾部丢几十 ms 日志或 cursor 短暂回退,下次读取自愈);本进程内以 in-flight set 防重入。理由:彻底消除需 per-file 锁或替换 inode(会断子进程 fd),代价不成比例;环形缓冲语义本就是尽力保留。
 - **R-5 MEMORY.md 并发 last-writer-wins 接受为边界**:它是从 *.md 条目文件渲染的派生物,并发覆盖丢行后由任一下次 rebuild 自愈;持久层是条目文件本身(每条独立文件无交错)。理由:MEMORY.md 加锁引入的复杂度高于自愈代价。
 - **R-6 索引一致性 lint 必须对 renderIndex 真实产物验证**(behavioral lint `agentsmd_lint_parses_renderindex_output`):手写 fixture 与生产渲染格式脱节,曾让 `^` 缺 MULTILINE 的解析 bug 全绿通过。理由:守护「lint 自己」的解析正确性,重放生产格式作为原始输入。
+- **R-7 注入视图与磁盘真相分离(prompt O(1) 有界)**:system prompt 只注入固定说明头 + memory_refs 热度 top-30 条 + 其余条数与 memory_search 指引;MEMORY.md 磁盘文件保持全量索引(lint 与人读的真相)。理由:全文注入是每 turn 线性税(≈20 tokens/条),407 条迁移后不可接受;截断视图信息零损失(全部条目 search 可达);热度排名只在条目集变化(mtime)时重算——search 引起的 refs 变化不触发重渲染,保证节内容缓存稳定。top-K 之外条目对模型"被动可见性"下降,由 prompt 头显式指示按需检索补偿。
+- **R-8 查重词命中双向子串**:term 在 haystack 中,或 haystack(≥5 字符)在 term 中——变体名(duo-cache-probe-v2 ⊃ duo-cache-probe)计满命中;短 haystack 不触发反向防 ops 类误伤。
