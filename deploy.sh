@@ -38,9 +38,22 @@ install_extensions() {
 	done
 }
 
+install_skills() {
+	for dir in skills/*/; do
+		local name
+		name="$(basename "${dir}")"
+		if [[ -f "${dir}SKILL.md" ]]; then
+			mkdir -p "${HOME}/.agents/skills/${name}"
+			cp "${dir}SKILL.md" "${HOME}/.agents/skills/${name}/SKILL.md"
+			echo "skills: deployed ${name}"
+		fi
+	done
+}
+
 main() {
 	install_agents_md
 	install_extensions
+	install_skills
 	if [[ -f "${HOME}/.claude.json" ]]; then
 		"./scripts/sync-mcp.sh"
 	fi
