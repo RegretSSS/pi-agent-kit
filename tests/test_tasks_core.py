@@ -71,3 +71,14 @@ def test_ring_buffer_cursor_survives_shrink(tmp_path) -> None:
     tail = drive(tmp_path, "read-range", {"id": task_id, "since": mid_cursor})
     assert tail["cursor"] == 300 * 1024
     assert tail["contentLen"] == 128 * 1024 - 0
+
+
+def test_gc_removes_expired_exited(tmp_path) -> None:
+    drive(tmp_path, "create", {"cmd": "keep", "name": "fresh", "pid": 99999999})
+    drive(tmp_path, "gc-prep")
+    out = drive(tmp_path, "gc")
+    assert out["removed"] >= 1
+    assert "20000101000000-9" not in out["remaining"]
+    assert out["logGone"] is True
+    for line in [l for l in out["journal"].strip().split("\n") if l]:
+        assert json.loads(line)["kind"] == "created"

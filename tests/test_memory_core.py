@@ -89,3 +89,16 @@ def test_candidates_append(tmp_path) -> None:
     drive(tmp_path, "candidates")
     lines = (tmp_path / ".candidates.jsonl").read_text().strip().split("\n")
     assert json.loads(lines[-1]) == {"probe": True}
+
+
+def test_candidates_rotate_at_5mb(tmp_path) -> None:
+    out = drive(tmp_path, "candidates-rotate")
+    assert out["rotated"] is True
+    assert json.loads(out["fresh"]) == {"after": "rotate"}
+
+
+def test_single_term_overlap_not_rejected(tmp_path) -> None:
+    drive(tmp_path, "save", {"name": "engprime-ops", "description": "engprime 定时任务口径", "type": "reference", "body": "x"})
+    near = drive(tmp_path, "save", {"name": "engprime-jobs", "description": "engprime 任务队列", "type": "reference", "body": "y"})
+    assert near["outcome"]["status"] == "saved"
+    assert len(drive(tmp_path, "index")["entries"]) == 2

@@ -45,6 +45,14 @@ switch (scenario) {
 		out.ok = true;
 		break;
 	}
+	case "candidates-rotate": {
+		const fsp = await import("node:fs/promises");
+		await fsp.writeFile(`${root}/.candidates.jsonl`, "x".repeat(5 * 1024 * 1024 + 1), "utf8");
+		await store.appendCandidateRecord({ after: "rotate" });
+		out.rotated = (await fsp.stat(`${root}/.candidates.jsonl.1`)).size > 5 * 1024 * 1024;
+		out.fresh = await fsp.readFile(`${root}/.candidates.jsonl`, "utf8");
+		break;
+	}
 	default:
 		throw new Error(`unknown scenario: ${scenario}`);
 }

@@ -54,6 +54,27 @@ switch (scenario) {
 		out.tail = parseLogTail(payload.text, payload.chars);
 		break;
 	}
+	case "gc-prep": {
+		const fsp = await import("node:fs/promises");
+		const stale = { id: "20000101000000-9", name: "stale", cmd: "true", cwd: root, pid: 99999999, state: "exited", created: "2000-01-01T00:00:00.000Z", exitCode: 0, logBase: 0, exitAt: "2000-01-01T00:00:01.000Z" };
+		await fsp.writeFile(`${root}/tasks.jsonl`, `${JSON.stringify({ kind: "created", record: stale })}\n`, "utf8");
+		await fsp.writeFile(`${root}/20000101000000-9.log`, "old", "utf8");
+		out.ok = true;
+		break;
+	}
+	case "gc": {
+		const fsp = await import("node:fs/promises");
+		const fresh = new TaskRegistry(root);
+		await fresh.list();
+		out.removed = await fresh.gcExpired();
+		out.remaining = (await fresh.list()).map((task) => task.id);
+		out.logGone = !(await fsp.stat(`${root}/20000101000000-9.log`).then(
+			() => true,
+			() => false,
+		));
+		out.journal = await fsp.readFile(`${root}/tasks.jsonl`, "utf8");
+		break;
+	}
 	default:
 		throw new Error(`unknown scenario: ${scenario}`);
 }

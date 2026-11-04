@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -10,6 +10,7 @@ const FORBIDDEN_NAME = /[/\\\s:]|\.\./;
 const RULE_SHAPED = [/看到[^。\n]{1,40}就\s*(fail|拒绝|报错|禁)/, /(一律|必须|禁止|不得|不许)[^。\n]{0,40}(一律|必须|禁止|不得|不许)/];
 const PROJECT_TTL_MS = 30 * 24 * 3600 * 1000;
 const BODY_PREVIEW_CHARS = 600;
+const CANDIDATES_MAX_BYTES = 5 * 1024 * 1024;
 const LINT_TEMPLATE = [
 	"这条是判定性知识(可写成「看到 X 就 fail」),不该进 memory。分流去 lints/:",
 	"1. 在所在仓新建 lints/<rule_name>.py,一规则一文件,接入 scripts/run-lints.sh",
@@ -112,6 +113,8 @@ export class MemoryStore {
 	private open(): DatabaseSync {
 		if (this.db) return this.db;
 		this.db = new DatabaseSync(join(this.root, ".index.db"));
+		this.db.exec("PRAGMA journal_mode=WAL");
+		this.db.exec("PRAGMA busy_timeout=3000");
 		this.db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(name, description, body, tokenize='trigram')");
 		this.db.exec("CREATE TABLE IF NOT EXISTS memory_refs (name TEXT PRIMARY KEY, last_referenced INTEGER NOT NULL)");
 		return this.db;
@@ -155,7 +158,9 @@ export class MemoryStore {
 		const entries = await this.listEntries(true);
 		await writeFile(join(this.root, "MEMORY.md"), renderIndex(entries), "utf8");
 		this.indexText = null;
-		await this.rebuildFts();
+		try {
+			await this.rebuildFts();
+		} catch {}
 		return entries;
 	}
 
@@ -210,7 +215,7 @@ export class MemoryStore {
 		const existing = entries.find((entry) => entry.name === name);
 		if (!existing) {
 			const query = `${name} ${description}`;
-			const duplicates = await this.findDuplicates(query, entries, ["name", "description"]);
+			const duplicates = (await this.findDuplicates(query, entries, ["name", "description"])).filter((hit) => hit.termsHit >= 2);
 			if (duplicates.length > 0) {
 				return { status: "rejected-duplicate", hits: duplicates.slice(0, 3) };
 			}
@@ -230,8 +235,7 @@ export class MemoryStore {
 		const duplicates: SearchHit[] = [];
 		for (const entry of entries) {
 			const termHits = this.countTermHits(entry, terms, rawQuery);
-			const ftsMatched = ftsHit.has(entry.name);
-			if (ftsMatched || termHits > 0) duplicates.push({ entry, termsHit: termHits + (ftsMatched ? terms.length : 0) });
+			if (ftsHit.has(entry.name) || termHits > 0) duplicates.push({ entry, termsHit: termHits });
 		}
 		duplicates.sort((a, b) => b.termsHit - a.termsHit);
 		return duplicates;
@@ -266,7 +270,12 @@ export class MemoryStore {
 
 	async appendCandidateRecord(record: unknown): Promise<void> {
 		await mkdir(this.root, { recursive: true });
-		await appendFile(join(this.root, ".candidates.jsonl"), JSON.stringify(record) + "\n", "utf8");
+		const path = join(this.root, ".candidates.jsonl");
+		try {
+			const info = await stat(path);
+			if (info.size > CANDIDATES_MAX_BYTES) await rename(path, `${path}.1`);
+		} catch {}
+		await appendFile(path, JSON.stringify(record) + "\n", "utf8");
 	}
 
 	async readIndexText(): Promise<string | null> {

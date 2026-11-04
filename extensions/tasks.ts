@@ -1,4 +1,4 @@
-import { appendFile, mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +10,7 @@ const LOG_KEEP_BYTES = 128 * 1024;
 const POLL_INTERVAL_MS = 2000;
 const STOP_GRACE_MS = 5000;
 const NOTIFY_TAIL_CHARS = 200;
+const TASK_TTL_MS = 7 * 24 * 3600 * 1000;
 
 export type TaskState = "running" | "exited";
 
@@ -181,6 +182,31 @@ export class TaskRegistry {
 			await this.append({ kind: "logrotate", id, logBase: task.logBase + (buf.length - kept.length) });
 		}
 	}
+
+	private async compactJournal(): Promise<void> {
+		const journal = join(this.root, "tasks.jsonl");
+		const lines: string[] = [];
+		for (const task of this.tasks.values()) {
+			lines.push(JSON.stringify({ kind: "created", record: task }));
+		}
+		const tmp = `${journal}.${process.pid}.tmp`;
+		await writeFile(tmp, lines.join("\n") + (lines.length > 0 ? "\n" : ""), "utf8");
+		await rename(tmp, journal);
+	}
+
+	async gcExpired(): Promise<number> {
+		const cutoff = Date.now() - TASK_TTL_MS;
+		let removed = 0;
+		for (const task of this.tasks.values()) {
+			if (task.state !== "exited" || !task.exitAt) continue;
+			if (Date.parse(task.exitAt) > cutoff) continue;
+			this.tasks.delete(task.id);
+			await rm(this.logPath(task.id), { force: true });
+			removed += 1;
+		}
+		if (removed > 0) await this.compactJournal();
+		return removed;
+	}
 }
 
 export default async function (pi: ExtensionAPI) {
@@ -252,10 +278,14 @@ export default async function (pi: ExtensionAPI) {
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			await registry.ensureLoaded();
+			const cwd = params.cwd ?? ctx.cwd;
+			if (!existsSync(cwd)) {
+				return { content: [{ type: "text", text: `cwd 不存在: ${cwd}` }], details: { found: false }, isError: true };
+			}
 			const id = await registry.nextId();
 			const logHandle = await open(registry.logPath(id), "a");
 			const child = spawn(params.cmd, {
-				cwd: params.cwd ?? ctx.cwd,
+				cwd,
 				shell: "/bin/bash",
 				detached: true,
 				stdio: ["ignore", logHandle.fd, logHandle.fd],
@@ -263,7 +293,7 @@ export default async function (pi: ExtensionAPI) {
 			child.unref();
 			watchChild(id, child);
 			await logHandle.close();
-			const record = await registry.recordCreate(id, params.cmd, params.cwd ?? ctx.cwd, params.name ?? params.cmd.slice(0, 40), child.pid ?? 0);
+			const record = await registry.recordCreate(id, params.cmd, cwd, params.name ?? params.cmd.slice(0, 40), child.pid ?? 0);
 			return {
 				content: [{ type: "text", text: `task ${record.id} started (pid=${record.pid}): ${record.cmd}` }],
 				details: { id: record.id, name: record.name, pid: record.pid },
@@ -354,6 +384,7 @@ export default async function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async () => {
 		await registry.ensureLoaded();
+		await registry.gcExpired();
 		if (!pollTimer) {
 			pollTimer = setInterval(() => {
 				void sweep();
