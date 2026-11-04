@@ -93,6 +93,27 @@ switch (scenario) {
 		out.content = range.content;
 		break;
 	}
+	case "reap-owner": {
+		const { spawn: sp } = await import("node:child_process");
+		const aliveOwner = sp("sleep", ["8"], { stdio: "ignore" });
+		const selfId = await registry.nextId();
+		await registry.recordCreate(selfId, "self", root, "self-owned", 99999999);
+		const deadId = await registry.nextId();
+		await registry.recordCreate(deadId, "dead", root, "dead-owner", 99999999, 99999999);
+		const yieldId = await registry.nextId();
+		await registry.recordCreate(yieldId, "yield", root, "live-foreign-owner", 99999999, aliveOwner.pid ?? 0);
+		await registry.list();
+		let all = await registry.list();
+		out.selfState = all.find((t) => t.id === selfId)?.state;
+		out.deadOwnerState = all.find((t) => t.id === deadId)?.state;
+		out.yieldWhileOwnerAlive = all.find((t) => t.id === yieldId)?.state;
+		aliveOwner.kill();
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		await registry.reapDeadPids();
+		all = await registry.list();
+		out.yieldAfterOwnerDeath = all.find((t) => t.id === yieldId)?.state;
+		break;
+	}
 	default:
 		throw new Error(`unknown scenario: ${scenario}`);
 }

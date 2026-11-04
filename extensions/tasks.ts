@@ -32,6 +32,7 @@ export type TaskRecord = {
 	logBase: number;
 	exitAt?: string;
 	procStart?: string;
+	ownerPid?: number;
 };
 
 type TaskEvent =
@@ -158,11 +159,22 @@ export class TaskRegistry {
 		const reaped: TaskRecord[] = [];
 		for (const task of this.tasks.values()) {
 			if (task.state !== "running") continue;
+			const foreignOwner = task.ownerPid !== undefined && task.ownerPid !== process.pid;
+			if (foreignOwner && this.ownerAlive(task.ownerPid!)) continue;
 			if (this.processAlive(task)) continue;
 			await this.append({ kind: "exit", id: task.id, exitCode: null, at: new Date().toISOString() });
 			reaped.push(this.tasks.get(task.id)!);
 		}
 		return reaped;
+	}
+
+	private ownerAlive(ownerPid: number): boolean {
+		try {
+			process.kill(ownerPid, 0);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	async list(): Promise<TaskRecord[]> {
@@ -187,8 +199,8 @@ export class TaskRegistry {
 		return `${stamp}-${seq}`;
 	}
 
-	async recordCreate(id: string, cmd: string, cwd: string, name: string, pid: number): Promise<TaskRecord> {
-		const record: TaskRecord = { id, name, cmd, cwd, pid, state: "running", created: new Date().toISOString(), exitCode: null, logBase: 0, procStart: procStartTicks(pid) };
+	async recordCreate(id: string, cmd: string, cwd: string, name: string, pid: number, ownerPid: number = process.pid): Promise<TaskRecord> {
+		const record: TaskRecord = { id, name, cmd, cwd, pid, state: "running", created: new Date().toISOString(), exitCode: null, logBase: 0, procStart: procStartTicks(pid), ownerPid };
 		await this.append({ kind: "created", record });
 		return record;
 	}
@@ -306,8 +318,10 @@ export default async function (pi: ExtensionAPI) {
 			if (!entry.exited) continue;
 			children.delete(id);
 			const task = registry.get(id);
-			if (!task || task.state !== "running") continue;
-			await registry.markExit(id, entry.exitCode);
+			if (!task) continue;
+			if (task.state === "running") {
+				await registry.markExit(id, entry.exitCode);
+			}
 			finished.push(registry.get(id)!);
 		}
 		const reaped = await registry.reapDeadPids();

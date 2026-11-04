@@ -96,3 +96,11 @@ def test_output_strips_terminal_control_codes(tmp_path) -> None:
     assert "[" not in out["content"]
     assert "cleanred" in out["content"]
     assert "done" in out["content"]
+
+
+def test_reap_owner_yield_takeover_self(tmp_path) -> None:
+    out = drive(tmp_path, "reap-owner")
+    assert out["selfState"] == "exited"
+    assert out["deadOwnerState"] == "exited"
+    assert out["yieldWhileOwnerAlive"] == "running"
+    assert out["yieldAfterOwnerDeath"] == "exited"
