@@ -111,13 +111,13 @@ class TestAgentsmdIndexConsistency:
     def test_consistent_dir_passes(self, tmp_path) -> None:
         mod = load("agentsmd_index_consistency")
         (tmp_path / "aliyun.md").write_text("---\nname: aliyun\n---\nbody")
-        (tmp_path / "MEMORY.md").write_text("- [aliyun](aliyun.md) — hook\n")
+        (tmp_path / "MEMORY.md").write_text("# Memory Index\n\n- [aliyun](aliyun.md) — hook\n")
         assert mod.lint(tmp_path) == []
 
     def test_both_directions_flagged(self, tmp_path) -> None:
         mod = load("agentsmd_index_consistency")
         (tmp_path / "orphan.md").write_text("body")
-        (tmp_path / "MEMORY.md").write_text("- [ghost](ghost.md) — hook\n")
+        (tmp_path / "MEMORY.md").write_text("# Memory Index\n\n- [ghost](ghost.md) — hook\n")
         problems = "\n".join(mod.lint(tmp_path))
         assert "缺索引行 orphan.md" in problems
         assert "指向不存在的文件 ghost.md" in problems

@@ -42,6 +42,10 @@ export function isRuleShaped(text: string): boolean {
 	return RULE_SHAPED.some((pattern) => pattern.test(text));
 }
 
+export function stripControlCodes(text: string): string {
+	return text.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
+}
+
 export function quoteFtsPhrase(term: string): string {
 	return '"' + term.replaceAll('"', '""') + '"';
 }
@@ -208,8 +212,11 @@ export class MemoryStore {
 		if (!(MEMORY_TYPES as readonly string[]).includes(type)) {
 			return { status: "rejected-lints", message: `type 必须是 ${MEMORY_TYPES.join("/")};判定性知识请去 lints/` };
 		}
-		if (!name || name.length > 64 || FORBIDDEN_NAME.test(name)) {
-			return { status: "rejected-lints", message: "name 需为短 slug(无空白/路径分隔符,≤64 字符)" };
+		if (!name || name.length > 64 || FORBIDDEN_NAME.test(name) || name.toLowerCase() === "memory") {
+			return { status: "rejected-lints", message: "name 需为短 slug(无空白/路径分隔符,≤64 字符,不得为 MEMORY)" };
+		}
+		if (description.includes("\n") || description.includes("\r")) {
+			return { status: "rejected-lints", message: "description 必须单行(它是 frontmatter 字段与索引行);细节放进 body" };
 		}
 		const entries = await this.listEntries();
 		const existing = entries.find((entry) => entry.name === name);
@@ -295,7 +302,7 @@ export class MemoryStore {
 function formatHits(hits: SearchHit[]): string {
 	return hits
 		.map((hit, i) => {
-			const preview = hit.entry.body.slice(0, BODY_PREVIEW_CHARS).replace(/\s+/g, " ");
+			const preview = stripControlCodes(hit.entry.body.slice(0, BODY_PREVIEW_CHARS).replace(/\s+/g, " "));
 			return `${i + 1}. [${hit.entry.type}] ${hit.entry.name} — ${hit.entry.description}\n   path: ~/.agents/memory/${hit.entry.file}\n   ${preview}`;
 		})
 		.join("\n");

@@ -80,5 +80,19 @@ def test_gc_removes_expired_exited(tmp_path) -> None:
     assert out["removed"] >= 1
     assert "20000101000000-9" not in out["remaining"]
     assert out["logGone"] is True
-    for line in [l for l in out["journal"].strip().split("\n") if l]:
-        assert json.loads(line)["kind"] == "created"
+    kinds = [json.loads(line)["kind"] for line in out["journal"].strip().split("\n") if line]
+    assert "gc" in kinds
+
+
+def test_cross_session_journal_exit_visible(tmp_path) -> None:
+    out = drive(tmp_path, "cross-session-exit")
+    assert out["state"] == "exited"
+    assert out["exitCode"] == 7
+
+
+def test_output_strips_terminal_control_codes(tmp_path) -> None:
+    out = drive(tmp_path, "escape-filter")
+    assert "\x1b" not in out["content"]
+    assert "[" not in out["content"]
+    assert "cleanred" in out["content"]
+    assert "done" in out["content"]

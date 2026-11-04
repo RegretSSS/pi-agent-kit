@@ -11,6 +11,7 @@ REPO = Path(__file__).resolve().parent.parent
 CC_ROOT = Path.home() / ".claude" / "projects"
 TARGET = Path.home() / ".agents" / "memory"
 VALID_TYPES = {"user", "project", "feedback", "reference"}
+FORBIDDEN_NAME = re.compile(r"[/\\\s:]|\.\.")
 RULE_SHAPED = [
     re.compile(r"看到[^。\n]{1,40}就\s*(fail|拒绝|报错|禁)"),
     re.compile(r"(一律|必须|禁止|不得|不许)[^。\n]{0,40}(一律|必须|禁止|不得|不许)"),
@@ -70,6 +71,11 @@ def collect():
             if parsed["type"] not in VALID_TYPES:
                 unclassified.append((project_dir.name, file.name, f"type={parsed['type']}"))
                 continue
+            if len(parsed["name"]) > 64 or FORBIDDEN_NAME.search(parsed["name"]) or parsed["name"].lower() == "memory":
+                unclassified.append((project_dir.name, file.name, f"非法 name={parsed['name']}"))
+                continue
+            if "\n" in parsed["description"] or "\r" in parsed["description"]:
+                parsed["description"] = re.sub(r"[\r\n]+", " ", parsed["description"]).strip()
             entries.append((project_dir, file, parsed))
     return entries, lints_suggestions, unclassified
 
@@ -95,7 +101,7 @@ def render_md(action, migrate_note):
     if action["type"] == "project":
         expiry = (datetime.utcnow() + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         lines.append(f"expiry_at: {expiry}")
-    lines.append("---", "")
+    lines.extend(["---", ""])
     body = action["body"].rstrip("\n")
     lines.append(body)
     lines.append("")

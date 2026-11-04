@@ -28,9 +28,13 @@ def lint(root: Path | None = None) -> list[str]:
         if path.parent.name == "lints" and path.name == SELF:
             continue
         try:
-            text = path.read_text(errors="ignore")
+            raw = path.read_bytes()
         except OSError:
             continue
+        if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+            text = raw.decode("utf-16", errors="ignore")
+        else:
+            text = raw.decode("utf-8", errors="ignore")
         for pattern in SECRET_PATTERNS:
             hit = pattern.search(text)
             if hit:

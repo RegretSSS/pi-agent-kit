@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 MEMORY_DIR = Path(os.environ.get("AGENTS_MEMORY_DIR", Path.home() / ".agents" / "memory"))
-INDEX_LINE = re.compile(r"^- \[[^\]]+\]\(([^)]+\.md)\)")
+INDEX_LINE = re.compile(r"^- \[[^\]]+\]\(([^)]+\.md)\)", re.MULTILINE)
 FRONTMATTER_NAME = re.compile(r"^name:\s*(\S+)")
 
 

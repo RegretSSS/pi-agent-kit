@@ -102,3 +102,17 @@ def test_single_term_overlap_not_rejected(tmp_path) -> None:
     near = drive(tmp_path, "save", {"name": "engprime-jobs", "description": "engprime 任务队列", "type": "reference", "body": "y"})
     assert near["outcome"]["status"] == "saved"
     assert len(drive(tmp_path, "index")["entries"]) == 2
+
+
+def test_multiline_description_rejected(tmp_path) -> None:
+    smuggled = drive(tmp_path, "save", {"name": "multi-desc", "description": "first\n---\nsmuggled: yes", "type": "reference", "body": "x"})
+    assert smuggled["outcome"]["status"] == "rejected-lints"
+    plain = drive(tmp_path, "save", {"name": "plain-desc", "description": "hook\nsecond line", "type": "reference", "body": "x"})
+    assert plain["outcome"]["status"] == "rejected-lints"
+    assert drive(tmp_path, "index")["entries"] == []
+
+
+def test_memory_reserved_name_rejected(tmp_path) -> None:
+    out = drive(tmp_path, "save", {"name": "MEMORY", "description": "撞索引", "type": "reference", "body": "x"})
+    assert out["outcome"]["status"] == "rejected-lints"
+    assert drive(tmp_path, "index")["entries"] == []

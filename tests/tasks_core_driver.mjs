@@ -75,6 +75,24 @@ switch (scenario) {
 		out.journal = await fsp.readFile(`${root}/tasks.jsonl`, "utf8");
 		break;
 	}
+	case "cross-session-exit": {
+		const fsp = await import("node:fs/promises");
+		const created = await registry.nextId();
+		await registry.recordCreate(created, "sleep 60", root, "cross", 99999999);
+		const foreignExit = { kind: "exit", id: created, exitCode: 7, at: "2026-01-01T00:00:00.000Z" };
+		await fsp.appendFile(`${root}/tasks.jsonl`, JSON.stringify(foreignExit) + "\n", "utf8");
+		const viewer = new TaskRegistry(root);
+		out.state = (await viewer.find(created)).state;
+		out.exitCode = (await viewer.find(created)).exitCode;
+		break;
+	}
+	case "escape-filter": {
+		const task = { id: "esc-1", name: "esc", cmd: "x", cwd: root, pid: 0, state: "exited", created: "2026-01-01T00:00:00.000Z", exitCode: 0, logBase: 0 };
+		const buf = Buffer.from("clean\x1b[31mred\x1b[0m\ndone\n", "utf8");
+		const range = readRange(task, buf, 0);
+		out.content = range.content;
+		break;
+	}
 	default:
 		throw new Error(`unknown scenario: ${scenario}`);
 }

@@ -1,5 +1,5 @@
-import { appendFile, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { appendFile, mkdir, open, readFile, readdir, rm, stat } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -11,6 +11,12 @@ const POLL_INTERVAL_MS = 2000;
 const STOP_GRACE_MS = 5000;
 const NOTIFY_TAIL_CHARS = 200;
 const TASK_TTL_MS = 7 * 24 * 3600 * 1000;
+const CONTROL_CODES = /[\x00-\x08\x0b-\x1f\x7f]/g;
+const CSI_SEQUENCES = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
+
+export function sanitizeLogText(text: string): string {
+	return text.replace(CSI_SEQUENCES, "").replace(CONTROL_CODES, "");
+}
 
 export type TaskState = "running" | "exited";
 
@@ -25,25 +31,48 @@ export type TaskRecord = {
 	exitCode: number | null;
 	logBase: number;
 	exitAt?: string;
+	procStart?: string;
 };
 
 type TaskEvent =
 	| { kind: "created"; record: TaskRecord }
 	| { kind: "exit"; id: string; exitCode: number | null; at: string }
-	| { kind: "logrotate"; id: string; logBase: number };
+	| { kind: "logrotate"; id: string; logBase: number }
+	| { kind: "gc"; ids: string[] };
 
 type ChildEntry = { child: ChildProcess; exited: boolean; exitCode: number | null };
+
+export function procStartTicks(pid: number): string | undefined {
+	try {
+		const text = readFileSync(`/proc/${pid}/stat`, "utf8");
+		const rest = text.slice(text.lastIndexOf(")") + 2);
+		const field = rest.split(/\s+/)[19];
+		return field || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+export function pidIsTask(pid: number, procStart: string | undefined): boolean {
+	try {
+		process.kill(pid, 0);
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+	if (!procStart) return true;
+	return procStartTicks(pid) === procStart;
+}
 
 export function readRange(record: TaskRecord, log: Buffer, since: number): { content: string; cursor: number } {
 	const cursor = record.logBase + log.length;
 	const start = since - record.logBase;
-	if (start <= 0) return { content: log.toString("utf8"), cursor };
+	if (start <= 0) return { content: sanitizeLogText(log.toString("utf8")), cursor };
 	if (start >= log.length) return { content: "", cursor };
-	return { content: log.subarray(start).toString("utf8"), cursor };
+	return { content: sanitizeLogText(log.subarray(start).toString("utf8")), cursor };
 }
 
 export function parseLogTail(text: string, chars: number): string {
-	const squashed = text.replace(/\s+/g, " ").trim();
+	const squashed = sanitizeLogText(text).replace(/\s+/g, " ").trim();
 	return squashed.length <= chars ? squashed : squashed.slice(-chars);
 }
 
@@ -68,33 +97,48 @@ export class TaskRegistry {
 			}
 		} else if (event.kind === "logrotate") {
 			const task = this.tasks.get(event.id);
-			if (task) task.logBase = event.logBase;
+			if (task && event.logBase > task.logBase) task.logBase = event.logBase;
+		} else if (event.kind === "gc") {
+			for (const id of event.ids) this.tasks.delete(id);
 		}
 	}
 
 	private async append(event: TaskEvent): Promise<void> {
 		await mkdir(this.root, { recursive: true });
-		await appendFile(join(this.root, "tasks.jsonl"), JSON.stringify(event) + "\n", "utf8");
+		await appendFile(this.journalPath(), JSON.stringify(event) + "\n", "utf8");
 		this.apply(event);
 	}
 
-	private processAlive(pid: number): boolean {
-		if (pid <= 0) return false;
-		try {
-			process.kill(pid, 0);
-			return true;
-		} catch (error) {
-			return (error as NodeJS.ErrnoException).code === "EPERM";
-		}
+	private processAlive(task: TaskRecord): boolean {
+		if (task.pid <= 0) return false;
+		return pidIsTask(task.pid, task.procStart);
 	}
 
-	async ensureLoaded(): Promise<void> {
-		if (this.loaded) return;
-		this.loaded = true;
-		await mkdir(this.root, { recursive: true });
-		const journal = join(this.root, "tasks.jsonl");
-		if (!existsSync(journal)) return;
-		for (const line of (await readFile(journal, "utf8")).split("\n")) {
+	private journalPath(): string {
+		return join(this.root, "tasks.jsonl");
+	}
+
+	async refreshFromJournal(): Promise<void> {
+		if (!this.loaded) {
+			await mkdir(this.root, { recursive: true });
+			this.loaded = true;
+		}
+		let info;
+		try {
+			info = await stat(this.journalPath());
+		} catch {
+			return;
+		}
+		if (info.size === this.journalOffset) return;
+		const buf = await readFile(this.journalPath());
+		if (buf.length < this.journalOffset) {
+			this.tasks.clear();
+			this.journalOffset = 0;
+		}
+		const fresh = buf.subarray(this.journalOffset);
+		const lastNewline = fresh.lastIndexOf(0x0a);
+		if (lastNewline < 0) return;
+		for (const line of fresh.subarray(0, lastNewline).toString("utf8").split("\n")) {
 			if (!line) continue;
 			try {
 				this.apply(JSON.parse(line) as TaskEvent);
@@ -102,6 +146,11 @@ export class TaskRegistry {
 				continue;
 			}
 		}
+		this.journalOffset += lastNewline + 1;
+	}
+
+	async ensureLoaded(): Promise<void> {
+		await this.refreshFromJournal();
 		await this.reapDeadPids();
 	}
 
@@ -109,7 +158,7 @@ export class TaskRegistry {
 		const reaped: TaskRecord[] = [];
 		for (const task of this.tasks.values()) {
 			if (task.state !== "running") continue;
-			if (this.processAlive(task.pid)) continue;
+			if (this.processAlive(task)) continue;
 			await this.append({ kind: "exit", id: task.id, exitCode: null, at: new Date().toISOString() });
 			reaped.push(this.tasks.get(task.id)!);
 		}
@@ -139,7 +188,7 @@ export class TaskRegistry {
 	}
 
 	async recordCreate(id: string, cmd: string, cwd: string, name: string, pid: number): Promise<TaskRecord> {
-		const record: TaskRecord = { id, name, cmd, cwd, pid, state: "running", created: new Date().toISOString(), exitCode: null, logBase: 0 };
+		const record: TaskRecord = { id, name, cmd, cwd, pid, state: "running", created: new Date().toISOString(), exitCode: null, logBase: 0, procStart: procStartTicks(pid) };
 		await this.append({ kind: "created", record });
 		return record;
 	}
@@ -170,42 +219,42 @@ export class TaskRegistry {
 		for (const file of files) {
 			if (!file.endsWith(".log")) continue;
 			const id = file.slice(0, -4);
+			if (this.shrinkInFlight.has(id)) continue;
 			const task = this.tasks.get(id);
 			if (!task) continue;
 			const path = this.logPath(id);
 			if ((await stat(path)).size <= LOG_LIMIT_BYTES) continue;
-			const buf = await readFile(path);
-			const kept = buf.subarray(Math.max(0, buf.length - LOG_KEEP_BYTES));
-			const handle = await open(path, "w");
-			await handle.writeFile(kept);
-			await handle.close();
-			await this.append({ kind: "logrotate", id, logBase: task.logBase + (buf.length - kept.length) });
+			this.shrinkInFlight.add(id);
+			try {
+				const buf = await readFile(path);
+				const kept = buf.subarray(Math.max(0, buf.length - LOG_KEEP_BYTES));
+				const handle = await open(path, "w");
+				await handle.writeFile(kept);
+				await handle.close();
+				await this.append({ kind: "logrotate", id, logBase: task.logBase + (buf.length - kept.length) });
+			} finally {
+				this.shrinkInFlight.delete(id);
+			}
 		}
 	}
 
-	private async compactJournal(): Promise<void> {
-		const journal = join(this.root, "tasks.jsonl");
-		const lines: string[] = [];
-		for (const task of this.tasks.values()) {
-			lines.push(JSON.stringify({ kind: "created", record: task }));
-		}
-		const tmp = `${journal}.${process.pid}.tmp`;
-		await writeFile(tmp, lines.join("\n") + (lines.length > 0 ? "\n" : ""), "utf8");
-		await rename(tmp, journal);
-	}
+	private shrinkInFlight = new Set<string>();
 
 	async gcExpired(): Promise<number> {
+		await this.refreshFromJournal();
 		const cutoff = Date.now() - TASK_TTL_MS;
-		let removed = 0;
+		const expired: string[] = [];
 		for (const task of this.tasks.values()) {
 			if (task.state !== "exited" || !task.exitAt) continue;
 			if (Date.parse(task.exitAt) > cutoff) continue;
-			this.tasks.delete(task.id);
-			await rm(this.logPath(task.id), { force: true });
-			removed += 1;
+			expired.push(task.id);
 		}
-		if (removed > 0) await this.compactJournal();
-		return removed;
+		if (expired.length === 0) return 0;
+		await this.append({ kind: "gc", ids: expired });
+		for (const id of expired) {
+			await rm(this.logPath(id), { force: true });
+		}
+		return expired.length;
 	}
 }
 
@@ -251,6 +300,7 @@ export default async function (pi: ExtensionAPI) {
 	}
 
 	async function sweep(): Promise<void> {
+		await registry.refreshFromJournal();
 		const finished: TaskRecord[] = [];
 		for (const [id, entry] of children) {
 			if (!entry.exited) continue;
@@ -353,10 +403,21 @@ export default async function (pi: ExtensionAPI) {
 				}
 				children.delete(task.id);
 				await registry.markExit(task.id, entry.exitCode);
+			} else if (!pidIsTask(task.pid, task.procStart)) {
+				await registry.markExit(task.id, null);
 			} else {
 				try {
 					process.kill(-task.pid, "SIGTERM");
 				} catch {}
+				const graceDeadline = Date.now() + STOP_GRACE_MS;
+				while (pidIsTask(task.pid, task.procStart) && Date.now() < graceDeadline) {
+					await new Promise((resolve) => setTimeout(resolve, 100));
+				}
+				if (pidIsTask(task.pid, task.procStart)) {
+					try {
+						process.kill(-task.pid, "SIGKILL");
+					} catch {}
+				}
 				await registry.markExit(task.id, null);
 			}
 			const stopped = registry.get(task.id);
@@ -384,10 +445,11 @@ export default async function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async () => {
 		await registry.ensureLoaded();
+		await registry.reapDeadPids();
 		await registry.gcExpired();
 		if (!pollTimer) {
 			pollTimer = setInterval(() => {
-				void sweep();
+				sweep().catch(() => {});
 			}, POLL_INTERVAL_MS);
 		}
 	});
