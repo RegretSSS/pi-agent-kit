@@ -31,6 +31,7 @@ for name in wanted:
     servers[name] = sources[name]
 pi_path.parent.mkdir(parents=True, exist_ok=True)
 pi_path.write_text(json.dumps(pi, ensure_ascii=False, indent=1) + "\n")
+pi_path.chmod(0o600)
 
 for name in wanted:
     print(f"sync-mcp: synced {name}")
