@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import re
 import sys
 import tokenize
@@ -58,7 +59,7 @@ def lint(root: Path | None = None) -> list[str]:
 
 
 if __name__ == "__main__":
-    found = lint()
+    found = lint(Path(os.environ.get("LINT_ROOT", ROOT)))
     for line in found:
         print(line)
     if found:

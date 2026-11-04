@@ -18,7 +18,7 @@ def drive(root: Path, scenario: str, payload: dict | None = None) -> dict:
 
 
 def test_journal_replay_and_crash_recovery(tmp_path) -> None:
-    created = drive(tmp_path, "create", {"cmd": "sleep 60", "name": "sleepy", "pid": 99999999})
+    created = drive(tmp_path, "create", {"cmd": "sleep 60", "name": "sleepy", "pid": 4194303})
     task_id = created["record"]["id"]
     assert created["record"]["state"] == "running"
     reloaded = drive(tmp_path, "reload")
@@ -38,7 +38,7 @@ def test_alive_pid_kept_running(tmp_path) -> None:
 
 
 def test_exit_marking_idempotent_via_state(tmp_path) -> None:
-    created = drive(tmp_path, "create", {"cmd": "true", "name": "quick", "pid": 99999999})
+    created = drive(tmp_path, "create", {"cmd": "true", "name": "quick", "pid": 4194303})
     task_id = created["record"]["id"]
     drive(tmp_path, "mark-exit", {"id": task_id, "exitCode": 3})
     listed = drive(tmp_path, "list")
@@ -52,7 +52,7 @@ def test_exit_marking_idempotent_via_state(tmp_path) -> None:
 
 
 def test_ring_buffer_cursor_survives_shrink(tmp_path) -> None:
-    created = drive(tmp_path, "create", {"cmd": "log", "name": "logger", "pid": 99999999})
+    created = drive(tmp_path, "create", {"cmd": "log", "name": "logger", "pid": 4194303})
     task_id = created["record"]["id"]
     written = drive(tmp_path, "write-log", {"id": task_id, "kb": 300})
     assert written["bytes"] == 300 * 1024
@@ -74,7 +74,7 @@ def test_ring_buffer_cursor_survives_shrink(tmp_path) -> None:
 
 
 def test_gc_removes_expired_exited(tmp_path) -> None:
-    drive(tmp_path, "create", {"cmd": "keep", "name": "fresh", "pid": 99999999})
+    drive(tmp_path, "create", {"cmd": "keep", "name": "fresh", "pid": 4194303})
     drive(tmp_path, "gc-prep")
     out = drive(tmp_path, "gc")
     assert out["removed"] >= 1
@@ -96,6 +96,18 @@ def test_output_strips_terminal_control_codes(tmp_path) -> None:
     assert "[" not in out["content"]
     assert "cleanred" in out["content"]
     assert "done" in out["content"]
+
+
+def test_journal_offset_shortcircuit(tmp_path) -> None:
+    out = drive(tmp_path, "offset-probe")
+    assert out["offsetFirst"] == out["journalSize"]
+    assert out["offsetSecondNoop"] == out["offsetFirst"]
+    assert out["offsetFirst"] > 0
+
+
+def test_forged_journal_events_dropped(tmp_path) -> None:
+    out = drive(tmp_path, "forge-journal")
+    assert out["names"] == []
 
 
 def test_reap_owner_yield_takeover_self(tmp_path) -> None:

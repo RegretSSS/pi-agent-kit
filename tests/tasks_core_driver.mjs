@@ -37,8 +37,8 @@ switch (scenario) {
 	}
 	case "shrink": {
 		await registry.ensureLoaded();
-		await registry.shrinkOversizedLogs();
-		const task = registry.get(payload.id);
+		const task = await registry.find(payload.id);
+		if (task) await registry.shrinkTask(task);
 		out.logBase = task ? task.logBase : null;
 		break;
 	}
@@ -56,8 +56,12 @@ switch (scenario) {
 	}
 	case "gc-prep": {
 		const fsp = await import("node:fs/promises");
-		const stale = { id: "20000101000000-9", name: "stale", cmd: "true", cwd: root, pid: 99999999, state: "exited", created: "2000-01-01T00:00:00.000Z", exitCode: 0, logBase: 0, exitAt: "2000-01-01T00:00:01.000Z" };
-		await fsp.writeFile(`${root}/tasks.jsonl`, `${JSON.stringify({ kind: "created", record: stale })}\n`, "utf8");
+		const stale = { id: "20000101000000-9", name: "stale", cmd: "true", cwd: root, pid: 4194303, state: "running", created: "2000-01-01T00:00:00.000Z", exitCode: null, logBase: 0 };
+		const events = [
+			{ kind: "created", record: stale },
+			{ kind: "exit", id: stale.id, exitCode: 0, at: "2000-01-01T00:00:01.000Z" },
+		];
+		await fsp.writeFile(`${root}/tasks.jsonl`, events.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
 		await fsp.writeFile(`${root}/20000101000000-9.log`, "old", "utf8");
 		out.ok = true;
 		break;
@@ -78,7 +82,7 @@ switch (scenario) {
 	case "cross-session-exit": {
 		const fsp = await import("node:fs/promises");
 		const created = await registry.nextId();
-		await registry.recordCreate(created, "sleep 60", root, "cross", 99999999);
+		await registry.recordCreate(created, "sleep 60", root, "cross", 4194303);
 		const foreignExit = { kind: "exit", id: created, exitCode: 7, at: "2026-01-01T00:00:00.000Z" };
 		await fsp.appendFile(`${root}/tasks.jsonl`, JSON.stringify(foreignExit) + "\n", "utf8");
 		const viewer = new TaskRegistry(root);
@@ -93,15 +97,39 @@ switch (scenario) {
 		out.content = range.content;
 		break;
 	}
+	case "offset-probe": {
+		const created = await registry.nextId();
+		await registry.recordCreate(created, "x", root, "probe", 4194303);
+		await registry.refreshFromJournal();
+		out.offsetFirst = registry.journalOffsetProbe();
+		await registry.refreshFromJournal();
+		out.offsetSecondNoop = registry.journalOffsetProbe();
+		const { stat: st } = await import("node:fs/promises");
+		out.journalSize = (await st(`${root}/tasks.jsonl`)).size;
+		break;
+	}
+	case "forge-journal": {
+		const fsp = await import("node:fs/promises");
+		const forged = [
+			JSON.stringify({ kind: "created", record: { id: "not-an-id", name: "x", cmd: "x", cwd: root, pid: 100, state: "running", created: "2026-01-01T00:00:00.000Z", exitCode: null, logBase: 0 } }),
+			JSON.stringify({ kind: "created", record: { name: "ghost-no-id", pid: 1, state: "running" } }),
+			JSON.stringify({ kind: "created", record: { id: "20260101000000-1", name: "huge", cmd: "y".repeat(9000), cwd: root, pid: 100, state: "running", created: "2026-01-01T00:00:00.000Z", exitCode: null, logBase: 0 } }),
+			JSON.stringify({ kind: "gc", ids: ["../../etc"] }),
+		].join("\n");
+		await fsp.appendFile(`${root}/tasks.jsonl`, forged + "\n", "utf8");
+		const fresh = new TaskRegistry(root);
+		out.names = (await fresh.list()).map((t) => t.name);
+		break;
+	}
 	case "reap-owner": {
 		const { spawn: sp } = await import("node:child_process");
 		const aliveOwner = sp("sleep", ["8"], { stdio: "ignore" });
 		const selfId = await registry.nextId();
-		await registry.recordCreate(selfId, "self", root, "self-owned", 99999999);
+		await registry.recordCreate(selfId, "self", root, "self-owned", 4194303);
 		const deadId = await registry.nextId();
-		await registry.recordCreate(deadId, "dead", root, "dead-owner", 99999999, 99999999);
+		await registry.recordCreate(deadId, "dead", root, "dead-owner", 4194303, 4194303);
 		const yieldId = await registry.nextId();
-		await registry.recordCreate(yieldId, "yield", root, "live-foreign-owner", 99999999, aliveOwner.pid ?? 0);
+		await registry.recordCreate(yieldId, "yield", root, "live-foreign-owner", 4194303, aliveOwner.pid ?? 0);
 		await registry.list();
 		let all = await registry.list();
 		out.selfState = all.find((t) => t.id === selfId)?.state;

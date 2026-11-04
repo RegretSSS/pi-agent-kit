@@ -113,6 +113,28 @@ def test_variant_name_and_desc_duplicate_rejected(tmp_path) -> None:
     assert variant["outcome"]["hits"] == ["duo-cache-probe"]
 
 
+def test_rewritten_desc_variant_still_rejected(tmp_path) -> None:
+    drive(tmp_path, "save", {"name": "deploy-keys", "description": "发布用凭据口径", "type": "reference", "body": "x"})
+    rewritten = drive(tmp_path, "save", {"name": "deploy-keys-v2", "description": "完全换写的钩子文案", "type": "reference", "body": "y"})
+    assert rewritten["outcome"]["status"] == "rejected-duplicate"
+
+
+def test_case_and_nfc_variants_rejected(tmp_path) -> None:
+    drive(tmp_path, "save", {"name": "Deploy-Keys", "description": "d1", "type": "reference", "body": "x"})
+    lower = drive(tmp_path, "save", {"name": "deploy-keys", "description": "d2", "type": "reference", "body": "y"})
+    assert lower["outcome"]["status"] == "saved"
+    assert lower["outcome"]["updated"] is True
+    assert len(drive(tmp_path, "index")["entries"]) == 1
+
+
+def test_blank_description_rejected(tmp_path) -> None:
+    blank = drive(tmp_path, "save", {"name": "blank-desc", "description": "   ", "type": "reference", "body": "x"})
+    control = drive(tmp_path, "save", {"name": "ctrl-desc", "description": "\x07\x1b", "type": "reference", "body": "x"})
+    assert blank["outcome"]["status"] == "rejected-lints"
+    assert control["outcome"]["status"] == "rejected-lints"
+    assert drive(tmp_path, "index")["entries"] == []
+
+
 def test_multiline_description_rejected(tmp_path) -> None:
     smuggled = drive(tmp_path, "save", {"name": "multi-desc", "description": "first\n---\nsmuggled: yes", "type": "reference", "body": "x"})
     assert smuggled["outcome"]["status"] == "rejected-lints"

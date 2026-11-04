@@ -17,7 +17,7 @@ if [[ ! -d "${repo}/.git" ]]; then
 fi
 
 hook_body="#!/usr/bin/env bash
-\"${KIT_ROOT}/run-lints.sh\"
+LINT_ROOT=\"\$(cd \"\$(dirname \"\${BASH_SOURCE[0]}\")/../..\" && pwd)\" \"${KIT_ROOT}/run-lints.sh\"
 "
 
 if [[ -f "${hook}" ]] && ! grep -q "run-lints.sh" "${hook}"; then

@@ -6,12 +6,17 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const MEMORY_TYPES = ["user", "project", "feedback", "reference"] as const;
 const INDEX_HEADING = "# Memory Index";
-const FORBIDDEN_NAME = /[/\\\s:]|\.\./;
+const FORBIDDEN_NAME = /[/\\\s:]|\.\.|[\x00-\x1f\x7f]/;
 const RULE_SHAPED = [/看到[^。\n]{1,40}就\s*(fail|拒绝|报错|禁)/, /(一律|必须|禁止|不得|不许)[^。\n]{0,40}(一律|必须|禁止|不得|不许)/];
 const PROJECT_TTL_MS = 30 * 24 * 3600 * 1000;
 const BODY_PREVIEW_CHARS = 600;
 const CANDIDATES_MAX_BYTES = 5 * 1024 * 1024;
 const CONTEXT_TOP_K = 30;
+const DESCRIPTION_MAX_CHARS = 300;
+
+export function normalizeName(name: string): string {
+	return name.toLowerCase().normalize("NFC");
+}
 const LINT_TEMPLATE = [
 	"这条是判定性知识(可写成「看到 X 就 fail」),不该进 memory。分流去 lints/:",
 	"1. 在所在仓新建 lints/<rule_name>.py,一规则一文件,接入 scripts/run-lints.sh",
@@ -109,6 +114,7 @@ export class MemoryStore {
 	private db: DatabaseSync | null = null;
 	private entriesCache: MemoryEntry[] | null = null;
 	private indexMtimeMs = 0;
+	private dirMtimeMs = -1;
 	private indexText: string | null = null;
 
 	constructor(root?: string) {
@@ -131,7 +137,9 @@ export class MemoryStore {
 	}
 
 	async listEntries(force = false): Promise<MemoryEntry[]> {
-		if (!force && this.entriesCache) return this.entriesCache;
+		if (!force && this.entriesCache) {
+			if (await this.dirUnchanged()) return this.entriesCache;
+		}
 		const entries: MemoryEntry[] = [];
 		await mkdir(this.root, { recursive: true });
 		for (const name of await readdir(this.root)) {
@@ -140,7 +148,21 @@ export class MemoryStore {
 			if (parsed) entries.push(parsed);
 		}
 		this.entriesCache = entries;
+		this.dirMtimeMs = await this.probeDirMtime();
 		return entries;
+	}
+
+	private async probeDirMtime(): Promise<number> {
+		try {
+			return (await stat(this.root)).mtimeMs;
+		} catch {
+			return -1;
+		}
+	}
+
+	private async dirUnchanged(): Promise<boolean> {
+		if (this.dirMtimeMs < 0) return false;
+		return (await this.probeDirMtime()) === this.dirMtimeMs;
 	}
 
 	async rebuildFts(): Promise<void> {
@@ -221,17 +243,30 @@ export class MemoryStore {
 		if (description.includes("\n") || description.includes("\r")) {
 			return { status: "rejected-lints", message: "description 必须单行(它是 frontmatter 字段与索引行);细节放进 body" };
 		}
+		const cleanDescription = stripControlCodes(description).trim();
+		if (!cleanDescription) {
+			return { status: "rejected-lints", message: "description 不能为空或纯控制字符" };
+		}
+		if (cleanDescription.length > DESCRIPTION_MAX_CHARS) {
+			return { status: "rejected-lints", message: `description 上限 ${DESCRIPTION_MAX_CHARS} 字符,细节放进 body` };
+		}
+		description = cleanDescription;
+		const normalizedName = normalizeName(name);
 		const entries = await this.listEntries();
-		const existing = entries.find((entry) => entry.name === name);
+		const existing = entries.find((entry) => normalizeName(entry.name) === normalizedName);
 		if (!existing) {
 			const query = `${name} ${description}`;
-			const duplicates = (await this.findDuplicates(query, entries, ["name", "description"])).filter((hit) => hit.termsHit >= 2);
+			const duplicates = (await this.findDuplicates(query, entries, ["name", "description"])).filter(
+				(hit) => hit.termsHit >= 2 || (normalizeName(hit.entry.name).length >= 5 && (normalizedName.includes(normalizeName(hit.entry.name)) || normalizeName(hit.entry.name).includes(normalizedName))),
+			);
 			if (duplicates.length > 0) {
 				return { status: "rejected-duplicate", hits: duplicates.slice(0, 3) };
 			}
 		}
 		const expiryAt = type === "project" ? new Date(Date.now() + PROJECT_TTL_MS).toISOString() : undefined;
-		const entry: MemoryEntry = { name, description, type: type as MemoryType, file: `${name}.md`, body, expiryAt };
+		const canonicalName = existing ? existing.name : name;
+		const canonicalFile = existing ? existing.file : `${name}.md`;
+		const entry: MemoryEntry = { name: canonicalName, description, type: type as MemoryType, file: canonicalFile, body, expiryAt };
 		await writeFile(join(this.root, entry.file), renderEntry(entry), "utf8");
 		this.entriesCache = null;
 		await this.rebuildIndex();

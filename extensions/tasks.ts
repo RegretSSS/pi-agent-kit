@@ -77,10 +77,40 @@ export function parseLogTail(text: string, chars: number): string {
 	return squashed.length <= chars ? squashed : squashed.slice(-chars);
 }
 
+const TASK_ID_SHAPE = /^\d{14}-\d+$/;
+const PID_CEILING = 4_194_304;
+
+export function journalEventPlausible(event: TaskEvent): boolean {
+	if (event.kind === "created") {
+		const record = event.record;
+		if (typeof record !== "object" || record === null) return false;
+		if (!TASK_ID_SHAPE.test(String(record.id))) return false;
+		if (!Number.isInteger(record.pid) || record.pid <= 1 || record.pid >= PID_CEILING) return false;
+		if (typeof record.name !== "string" || record.name.length > 200) return false;
+		if (typeof record.cmd !== "string" || record.cmd.length > 8192) return false;
+		if (typeof record.cwd !== "string" || record.cwd.length > 4096) return false;
+		if (record.state !== "running") return false;
+		if (record.procStart !== undefined && typeof record.procStart !== "string") return false;
+		return true;
+	}
+	if (event.kind === "exit" || event.kind === "logrotate") {
+		return TASK_ID_SHAPE.test(String(event.id));
+	}
+	if (event.kind === "gc") {
+		return Array.isArray(event.ids) && event.ids.every((id) => TASK_ID_SHAPE.test(String(id)) && String(id).length < 4096);
+	}
+	return false;
+}
+
+export function canSignalTask(task: TaskRecord): boolean {
+	return task.pid > 1 && task.pid < PID_CEILING && typeof task.procStart === "string" && procStartTicks(task.pid) === task.procStart;
+}
+
 export class TaskRegistry {
 	readonly root: string;
 	private tasks = new Map<string, TaskRecord>();
 	private loaded = false;
+	private journalOffset = 0;
 
 	constructor(root?: string) {
 		this.root = root ?? join(homedir(), ".agents", "tasks");
@@ -119,6 +149,10 @@ export class TaskRegistry {
 		return join(this.root, "tasks.jsonl");
 	}
 
+	journalOffsetProbe(): number {
+		return this.journalOffset;
+	}
+
 	async refreshFromJournal(): Promise<void> {
 		if (!this.loaded) {
 			await mkdir(this.root, { recursive: true });
@@ -142,7 +176,9 @@ export class TaskRegistry {
 		for (const line of fresh.subarray(0, lastNewline).toString("utf8").split("\n")) {
 			if (!line) continue;
 			try {
-				this.apply(JSON.parse(line) as TaskEvent);
+				const event = JSON.parse(line) as TaskEvent;
+				if (!journalEventPlausible(event)) continue;
+				this.apply(event);
 			} catch {
 				continue;
 			}
@@ -221,32 +257,34 @@ export class TaskRegistry {
 		}
 	}
 
-	async shrinkOversizedLogs(): Promise<void> {
-		let files: string[];
+	async shrinkTask(task: TaskRecord): Promise<void> {
+		if (this.shrinkInFlight.has(task.id)) return;
+		const path = this.logPath(task.id);
+		let size: number;
 		try {
-			files = await readdir(this.root);
+			size = (await stat(path)).size;
 		} catch {
 			return;
 		}
-		for (const file of files) {
-			if (!file.endsWith(".log")) continue;
-			const id = file.slice(0, -4);
-			if (this.shrinkInFlight.has(id)) continue;
-			const task = this.tasks.get(id);
-			if (!task) continue;
-			const path = this.logPath(id);
-			if ((await stat(path)).size <= LOG_LIMIT_BYTES) continue;
-			this.shrinkInFlight.add(id);
-			try {
-				const buf = await readFile(path);
-				const kept = buf.subarray(Math.max(0, buf.length - LOG_KEEP_BYTES));
-				const handle = await open(path, "w");
-				await handle.writeFile(kept);
-				await handle.close();
-				await this.append({ kind: "logrotate", id, logBase: task.logBase + (buf.length - kept.length) });
-			} finally {
-				this.shrinkInFlight.delete(id);
-			}
+		if (size <= LOG_LIMIT_BYTES) return;
+		this.shrinkInFlight.add(task.id);
+		try {
+			const buf = await readFile(path);
+			const kept = buf.subarray(Math.max(0, buf.length - LOG_KEEP_BYTES));
+			const handle = await open(path, "w");
+			await handle.writeFile(kept);
+			await handle.close();
+			await this.append({ kind: "logrotate", id: task.id, logBase: task.logBase + (buf.length - kept.length) });
+		} catch {
+			return;
+		} finally {
+			this.shrinkInFlight.delete(task.id);
+		}
+	}
+
+	async shrinkOversizedLogs(): Promise<void> {
+		for (const task of this.tasks.values()) {
+			if (task.state === "running") await this.shrinkTask(task);
 		}
 	}
 
@@ -302,7 +340,7 @@ export default async function (pi: ExtensionAPI) {
 		const lines: string[] = [];
 		for (const task of tasks) {
 			const log = await registry.readLog(task.id);
-			const tail = log ? parseLogTail(log.toString("utf8"), NOTIFY_TAIL_CHARS) : "";
+			const tail = log ? parseLogTail(log.subarray(Math.max(0, log.length - 8192)).toString("utf8"), NOTIFY_TAIL_CHARS) : "";
 			lines.push(`[${task.id}] ${task.name} exit=${task.exitCode ?? "unknown"} tail: ${tail}`);
 		}
 		pi.sendMessage(
@@ -326,6 +364,9 @@ export default async function (pi: ExtensionAPI) {
 		}
 		const reaped = await registry.reapDeadPids();
 		await registry.shrinkOversizedLogs();
+		for (const task of [...finished, ...reaped]) {
+			await registry.shrinkTask(task);
+		}
 		await notifyFinished([...finished, ...reaped]);
 	}
 
@@ -346,6 +387,12 @@ export default async function (pi: ExtensionAPI) {
 			if (!existsSync(cwd)) {
 				return { content: [{ type: "text", text: `cwd 不存在: ${cwd}` }], details: { found: false }, isError: true };
 			}
+			if (!params.cmd || params.cmd.length > 8192) {
+				return { content: [{ type: "text", text: "cmd 需为 1..8192 字符;超长命令请落脚本文件后执行" }], details: { found: false }, isError: true };
+			}
+			if (params.name !== undefined && params.name.length > 200) {
+				return { content: [{ type: "text", text: "name 上限 200 字符" }], details: { found: false }, isError: true };
+			}
 			const id = await registry.nextId();
 			const logHandle = await open(registry.logPath(id), "a");
 			const child = spawn(params.cmd, {
@@ -357,7 +404,7 @@ export default async function (pi: ExtensionAPI) {
 			child.unref();
 			watchChild(id, child);
 			await logHandle.close();
-			const record = await registry.recordCreate(id, params.cmd, cwd, params.name ?? params.cmd.slice(0, 40), child.pid ?? 0);
+			const record = await registry.recordCreate(id, params.cmd, cwd, (params.name ?? params.cmd.slice(0, 40)).slice(0, 200), child.pid ?? 0);
 			return {
 				content: [{ type: "text", text: `task ${record.id} started (pid=${record.pid}): ${record.cmd}` }],
 				details: { id: record.id, name: record.name, pid: record.pid },
@@ -403,31 +450,39 @@ export default async function (pi: ExtensionAPI) {
 			}
 			const entry = children.get(task.id);
 			if (entry) {
-				try {
-					entry.child.kill("SIGTERM");
-				} catch {}
+				const pgid = entry.child.pid ?? 0;
+				const groupSignal = (signal: "SIGTERM" | "SIGKILL") => {
+					if (pgid > 1) {
+						try {
+							process.kill(-pgid, signal);
+							return;
+						} catch {}
+					}
+					try {
+						entry.child.kill(signal);
+					} catch {}
+				};
+				groupSignal("SIGTERM");
 				const deadline = Date.now() + STOP_GRACE_MS;
 				while (!entry.exited && Date.now() < deadline) {
 					await new Promise((resolve) => setTimeout(resolve, 100));
 				}
 				if (!entry.exited) {
-					try {
-						entry.child.kill("SIGKILL");
-					} catch {}
+					groupSignal("SIGKILL");
 				}
 				children.delete(task.id);
 				await registry.markExit(task.id, entry.exitCode);
-			} else if (!pidIsTask(task.pid, task.procStart)) {
+			} else if (!canSignalTask(task)) {
 				await registry.markExit(task.id, null);
 			} else {
 				try {
 					process.kill(-task.pid, "SIGTERM");
 				} catch {}
 				const graceDeadline = Date.now() + STOP_GRACE_MS;
-				while (pidIsTask(task.pid, task.procStart) && Date.now() < graceDeadline) {
+				while (canSignalTask(task) && Date.now() < graceDeadline) {
 					await new Promise((resolve) => setTimeout(resolve, 100));
 				}
-				if (pidIsTask(task.pid, task.procStart)) {
+				if (canSignalTask(task)) {
 					try {
 						process.kill(-task.pid, "SIGKILL");
 					} catch {}
