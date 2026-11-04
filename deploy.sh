@@ -41,6 +41,9 @@ install_extensions() {
 main() {
 	install_agents_md
 	install_extensions
+	if [[ -f "${HOME}/.claude.json" ]]; then
+		"./scripts/sync-mcp.sh"
+	fi
 }
 
 main "$@"
