@@ -29,8 +29,18 @@ else:
 PY
 }
 
+install_extensions() {
+	local dest="${HOME}/.pi/agent/extensions"
+	mkdir -p "${dest}"
+	for src in extensions/*.ts; do
+		cp "${src}" "${dest}/$(basename "${src}")"
+		echo "extensions: deployed $(basename "${src}")"
+	done
+}
+
 main() {
 	install_agents_md
+	install_extensions
 }
 
 main "$@"
