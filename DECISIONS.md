@@ -41,3 +41,12 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D5-4 task_stop 在 execute 内最多等 5s**:等待本地进程退出,非跨回合回调/事件,不触死锁红线(bash 工具同样等待命令)。
 - **D5-5 通知唤醒链路**:2s 轮询 + agent_settled 双触发 sweep;退出合并周期内多任务为一条 pi.sendMessage({triggerTurn: true});pi busy 时 sendMessage steer 排队不阻塞。
 - **D5-6 协议字段必须进 content**(验收实测踩坑后立 lint `tool_protocol_fields_in_content`):cursor 等增量协议字段只进 details 时模型不可见(模型只读 content),增量读协议整个失效;修复为 content 末尾回显 `[cursor=N state=.. exit=..]`。
+
+## Review(workflow 全量对抗 review 后)
+
+- **R-1 journal 纯 append-only + gc tombstone**:tasks.jsonl 只许 appendFile;GC 落 `{"kind":"gc","ids":[...]}` 事件,重放时删除对应任务,不做覆写式压实。理由:rename/tmp 覆写与并发 append 有静默丢他窗事件的竞态窗口;append-only 是无锁并发安全的唯一形状,增长速率(几十任务/天,~100B/条)远低于需要压实的量级。配套 pattern lint `tasks_journal_append_only`。
+- **R-2 跨会话状态实时化:refreshFromJournal 增量重放**:list/find/sweep 前按 journal 字节偏移增量读新事件(stat 短路,无新数据零读盘)。理由:journal 只在启动重放一次的旧设计下,并行 pi 会话的 logrotate/exit 事件对本进程永久不可见,logBase 过期导致游标倒退、重复 exit 通知。已知边界:事件自我 append 不推进 offset,下次 refresh 会幂等重放一次(线性重放终态一致)。
+- **R-3 pid 复用防护用 /proc starttime**:created 事件记 `procStart`(第 22 字段 clock ticks),探活与 task_stop 前校验 pid 的 starttime 一致才认为是本任务;不一致视为已退出,绝不向无关进程发信号。
+- **R-4 shrink 环回的残余竞态接受为边界**:log 截尾(truncate)与子进程 O_APPEND 写、跨进程双 shrink 之间仍有毫秒级窗口(尾部丢几十 ms 日志或 cursor 短暂回退,下次读取自愈);本进程内以 in-flight set 防重入。理由:彻底消除需 per-file 锁或替换 inode(会断子进程 fd),代价不成比例;环形缓冲语义本就是尽力保留。
+- **R-5 MEMORY.md 并发 last-writer-wins 接受为边界**:它是从 *.md 条目文件渲染的派生物,并发覆盖丢行后由任一下次 rebuild 自愈;持久层是条目文件本身(每条独立文件无交错)。理由:MEMORY.md 加锁引入的复杂度高于自愈代价。
+- **R-6 索引一致性 lint 必须对 renderIndex 真实产物验证**(behavioral lint `agentsmd_lint_parses_renderindex_output`):手写 fixture 与生产渲染格式脱节,曾让 `^` 缺 MULTILINE 的解析 bug 全绿通过。理由:守护「lint 自己」的解析正确性,重放生产格式作为原始输入。
