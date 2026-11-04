@@ -286,8 +286,9 @@ export default async function (pi: ExtensionAPI) {
 			}
 			const log = await registry.readLog(task.id);
 			const { content, cursor } = readRange(task, log ?? Buffer.alloc(0), params.since ?? 0);
+			const protocol = `[cursor=${cursor} state=${task.state} exit=${task.exitCode ?? "-"}]`;
 			return {
-				content: [{ type: "text", text: content || "(无新输出)" }],
+				content: [{ type: "text", text: `${content || "(无新输出)"}\n${protocol}` }],
 				details: { cursor, state: task.state, exitCode: task.exitCode },
 			};
 		},
