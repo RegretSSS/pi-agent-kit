@@ -98,9 +98,13 @@ def make_fake_upstream(home: Path) -> None:
         "}\n"
         '  const unsubPing = handleRpc(events, "subagents:rpc:ping", () => {\n'
         "    return { version: PROTOCOL_VERSION };\n"
-        "  });\n"
+        "  });\n",
+        encoding="utf8",
+    )
+    desc_dir = src_dir / "workflow"
+    desc_dir.mkdir(parents=True)
+    (desc_dir / "tool-description.ts").write_text(
         "export const fullWorkflowToolDescription = `placeholder`;\n"
-        "// tail\n"
         "stamp results after the workflow returns, or pass timestamps via args.`;\n",
         encoding="utf8",
     )
@@ -137,7 +141,7 @@ def test_patch_script_idempotent_and_anchored(tmp_path) -> None:
     assert "getScheduler?: () => unknown;" in rpc_text
     index_text = (home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/src/index.ts").read_text()
     assert "getScheduler: () => scheduler," in index_text
-    rpc_text2 = (home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/src/cross-extension-rpc.ts").read_text()
+    rpc_text2 = (home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/src/workflow/tool-description.ts").read_text()
     assert "slimWorkflowToolDescription" in rpc_text2
     assert "read the skill `subagent-workflows`" in rpc_text2
     assert "renderToolDescriptionTemplate(slimWorkflowToolDescription)," in index_text
@@ -153,6 +157,13 @@ def test_patch_script_fails_cleanly_on_anchor_miss(tmp_path) -> None:
     src_dir = home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/src"
     src_dir.mkdir(parents=True)
     (src_dir / "cross-extension-rpc.ts").write_text("upgraded beyond recognition", encoding="utf8")
+    desc_dir = src_dir / "workflow"
+    desc_dir.mkdir(parents=True)
+    (desc_dir / "tool-description.ts").write_text(
+        "export const fullWorkflowToolDescription = `placeholder`;\n"
+        "stamp results after the workflow returns, or pass timestamps via args.`;\n",
+        encoding="utf8",
+    )
     (src_dir / "index.ts").write_text("anything", encoding="utf8")
     result = run_patch(home, tmp_path)
     assert result.returncode == 1

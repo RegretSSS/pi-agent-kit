@@ -5,6 +5,7 @@ import { join } from "node:path";
 const PKG = join(process.env.HOME ?? "", ".pi/agent/npm/node_modules/@tintinweb/pi-subagents");
 const RPC_SRC = join(PKG, "src/cross-extension-rpc.ts");
 const INDEX_SRC = join(PKG, "src/index.ts");
+const DESC_SRC = join(PKG, "src/workflow/tool-description.ts");
 
 const RPC_PING_ANCHOR = `  const unsubPing = handleRpc(events, "subagents:rpc:ping", () => {
     return { version: PROTOCOL_VERSION };
@@ -110,7 +111,7 @@ let ok = true;
 ok = patchFile(RPC_SRC, RPC_DEPS_ANCHOR, RPC_DEPS_REPLACEMENT, "getScheduler?: () => unknown;", "rpc-deps") && ok;
 ok = patchFile(RPC_SRC, RPC_PING_ANCHOR, RPC_INJECT, "subagents:rpc:schedule_list", "rpc-handlers") && ok;
 ok = patchFile(INDEX_SRC, INDEX_ANCHOR, INDEX_REPLACEMENT, "getScheduler: () => scheduler,", "getScheduler-dep") && ok;
-ok = patchFile(RPC_SRC, DESC_TAIL_ANCHOR, DESC_TAIL_ANCHOR + DESC_SLIM_EXPORT, "slimWorkflowToolDescription", "slim-desc") && ok;
+ok = patchFile(DESC_SRC, DESC_TAIL_ANCHOR, DESC_TAIL_ANCHOR + DESC_SLIM_EXPORT, "slimWorkflowToolDescription", "slim-desc") && ok;
 ok = patchFile(
 	INDEX_SRC,
 	"description: renderToolDescriptionTemplate(fullWorkflowToolDescription),",
