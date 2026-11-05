@@ -10,7 +10,7 @@ const WATCH_LOG = "/home/remedy/.agents-mailbox/hub.log"
 const LINE_ANCHOR = "^\\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8}\\] "
 const TRIGGER_RE = "FAILED|bounce|registry-pruned"
 const OFFSET_FILE = "/home/remedy/.agents/hub-watch.offset"
-const WINDOW_LOOPS = 108
+const WINDOW_LOOPS = 100
 const LOOP_SLEEP_S = 5
 const MAX_ROUNDS = 40
 
@@ -66,7 +66,7 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
     continue
   }
   return {
-    conclusion: `hub.log 捕到 ${window.matched.length} 条触发行(第 ${round} 轮)。分诊处理;处理完成后推进偏移防重见:bash: echo ${window.newTotal} > ${OFFSET_FILE};推进后重布守望(SubagentWorkflow scriptPath 本模板)。`,
+    conclusion: `hub.log 捕到 ${window.matched.length} 条触发行(第 ${round} 轮)。分诊前先验偏移仍为旧值(bash: cat ${OFFSET_FILE},若已被推进说明他人已处理,跳过分诊);处理完成后原子推进偏移:bash: printf '%s\\n' ${window.newTotal} > ${OFFSET_FILE}.tmp && mv ${OFFSET_FILE}.tmp ${OFFSET_FILE};推进后重布守望(SubagentWorkflow scriptPath 本模板)。`,
     matched: window.matched,
     newTotal: window.newTotal,
     offsetFile: OFFSET_FILE,
