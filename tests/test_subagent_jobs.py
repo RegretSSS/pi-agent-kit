@@ -144,7 +144,7 @@ def test_patch_script_idempotent_and_anchored(tmp_path) -> None:
     assert "getScheduler: () => scheduler," in index_text
     rpc_text2 = (home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/src/workflow/tool-description.ts").read_text()
     assert "slimWorkflowToolDescription" in rpc_text2
-    assert "read the skill `subagent-workflows`" in rpc_text2
+    assert "read the skill 'subagent-workflows'" in rpc_text2
     assert "renderToolDescriptionTemplate(slimWorkflowToolDescription)," in index_text
     assert "import { fullWorkflowToolDescription, slimWorkflowToolDescription }" in index_text
     assert not (tmp / "jiti").exists()
