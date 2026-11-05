@@ -180,3 +180,11 @@ def test_long_fence_and_info_string_not_misread() -> None:
         assert outside_heading_count(text, "## 问题即 lint") == 1
         run_deploy(home)
         assert target.read_text() == text
+
+
+def test_skills_carry_template_assets(tmp_path) -> None:
+    run_deploy(tmp_path)
+    skill_dir = tmp_path / ".agents" / "skills" / "queue-watch"
+    assert (skill_dir / "SKILL.md").exists()
+    assert (skill_dir / "template.js").exists()
+    assert "WATCH_BASH" in (skill_dir / "template.js").read_text(encoding="utf8")

@@ -122,6 +122,9 @@ install_skills() {
 		if [[ -f "${dir}SKILL.md" ]]; then
 			mkdir -p "${HOME}/.agents/skills/${name}"
 			cp "${dir}SKILL.md" "${HOME}/.agents/skills/${name}/SKILL.md"
+			for extra in "${dir}"*.js "${dir}"*.sh; do
+				[[ -f "${extra}" ]] && cp "${extra}" "${HOME}/.agents/skills/${name}/"
+			done
 			echo "skills: deployed ${name}"
 		fi
 	done
