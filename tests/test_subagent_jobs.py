@@ -109,6 +109,7 @@ def make_fake_upstream(home: Path) -> None:
         encoding="utf8",
     )
     (src_dir / "index.ts").write_text(
+        'import { fullWorkflowToolDescription } from "./workflow/tool-description.js";\n'
         "      rpcHandle = registerRpcHandlers({\n"
         "        events: pi.events,\n"
         "        pi,\n"
@@ -134,7 +135,7 @@ def test_patch_script_idempotent_and_anchored(tmp_path) -> None:
     make_fake_upstream(home)
     first = run_patch(home, tmp)
     assert first.returncode == 0, first.stderr
-    assert first.stdout.count("注入完成") == 5
+    assert first.stdout.count("注入完成") == 6
     rpc_text = (home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/src/cross-extension-rpc.ts").read_text()
     assert "subagents:rpc:schedule_list" in rpc_text
     assert "requireScheduler" in rpc_text
@@ -145,10 +146,11 @@ def test_patch_script_idempotent_and_anchored(tmp_path) -> None:
     assert "slimWorkflowToolDescription" in rpc_text2
     assert "read the skill `subagent-workflows`" in rpc_text2
     assert "renderToolDescriptionTemplate(slimWorkflowToolDescription)," in index_text
+    assert "import { fullWorkflowToolDescription, slimWorkflowToolDescription }" in index_text
     assert not (tmp / "jiti").exists()
     second = run_patch(home, tmp)
     assert second.returncode == 0
-    assert second.stdout.count("已打过") == 5
+    assert second.stdout.count("已打过") == 6
     assert "已清理 jiti" in second.stdout
 
 
