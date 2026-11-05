@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { rm, readFile } from "node:fs/promises";
+import { rm, readFile, mkdir, chmod, utimes, writeFile } from "node:fs/promises";
 import { HistoryIndex, formatOutline, scoreRow, splitTerms, buildTools } from "../extensions/history.ts";
 import { buildCompactInstructions } from "../extensions/compact-tool.ts";
 
@@ -134,7 +134,8 @@ switch (scenario) {
 		seedDb();
 		const first = new HistoryIndex(dbPath, sidecarDir);
 		await first.refresh();
-		const before = await readFile(`${sidecarDir}/sidecar.jsonl`, "utf8");
+		const { join } = await import("node:path");
+		const before = await readFile(join(sidecarDir, `sidecar.${process.pid}.jsonl`), "utf8");
 		const db = new DatabaseSync(dbPath);
 		db.exec("PRAGMA busy_timeout = 3000");
 		db.exec("DELETE FROM blocks");
@@ -142,7 +143,7 @@ switch (scenario) {
 		const second = new HistoryIndex(dbPath, sidecarDir);
 		out.refreshed = await second.refresh();
 		out.available = second.isAvailable();
-		out.sidecarUnchanged = (await readFile(`${sidecarDir}/sidecar.jsonl`, "utf8")) === before;
+		out.sidecarUnchanged = (await readFile(join(sidecarDir, `sidecar.${process.pid}.jsonl`), "utf8")) === before;
 		break;
 	}
 	case "shrink": {
@@ -162,6 +163,39 @@ switch (scenario) {
 		out.sessions = [...new Set(all.map((h) => h.row.session))];
 		out.count = all.length;
 		out.source = third.source();
+		break;
+	}
+	case "ro-sidecar": {
+		seedDb();
+		const roDir = `${root}/ro-sidecar`;
+		await mkdir(roDir, { recursive: true });
+		await chmod(roDir, 0o555);
+		const idx = new HistoryIndex(dbPath, roDir);
+		const startedAt = Date.now();
+		out.refreshed = await idx.refresh();
+		out.elapsedMs = Date.now() - startedAt;
+		out.available = idx.isAvailable();
+		out.source = idx.source();
+		out.hits = (await idx.search("民法典")).map((h) => h.row.blockId);
+		await chmod(roDir, 0o755);
+		break;
+	}
+	case "multi-snapshot": {
+		const dir = `${root}/multi`;
+		await mkdir(dir, { recursive: true });
+		const older = ["s-old", "b1", 0, 1, 1, true, "旧主题", 0, 5, 100, "旧内容"].join("\u0000");
+		const lineOld = JSON.stringify({ session: "s-old", blockId: "b1", ord: 0, tier: 1, active: true, topic: "旧主题", startSeq: 0, endSeq: 5, tokens: 100, summary: "旧内容" });
+		const lineNew = JSON.stringify({ session: "s-new", blockId: "b1", ord: 0, tier: 1, active: true, topic: "新主题", startSeq: 0, endSeq: 5, tokens: 100, summary: "新内容民法典" });
+		await writeFile(`${dir}/sidecar.111.jsonl`, lineOld + "\n");
+		await writeFile(`${dir}/sidecar.222.jsonl`, lineNew + "\n");
+		const past = new Date(Date.now() - 60000);
+		const recent = new Date(Date.now() - 1000);
+		await utimes(`${dir}/sidecar.111.jsonl`, past, past);
+		await utimes(`${dir}/sidecar.222.jsonl`, recent, recent);
+		const idx = new HistoryIndex(`${root}/nope.db`, dir);
+		out.refreshed = await idx.refresh();
+		out.source = idx.source();
+		out.sessions = (await idx.search("民法典")).map((h) => h.row.session);
 		break;
 	}
 	case "stale": {

@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -156,9 +156,7 @@ export class HistoryIndex {
 	private origin: "db" | "sidecar" = "sidecar";
 	private readonly hayCache = new Map<string, string>();
 	private epoch = 0;
-	private persistSeq = 0;
 	private persistFailed = false;
-	private persistChain: Promise<void> = Promise.resolve();
 
 	constructor(dbPath = defaultDbPath(), sidecarDir = defaultSidecarDir()) {
 		this.dbPath = dbPath;
@@ -166,7 +164,7 @@ export class HistoryIndex {
 	}
 
 	private sidecarPath(): string {
-		return join(this.sidecarDir, "sidecar.jsonl");
+		return this.sidecarFile();
 	}
 
 	isAvailable(): boolean {
@@ -187,8 +185,7 @@ export class HistoryIndex {
 		return value;
 	}
 
-	private async loadSidecar(): Promise<BlockRow[]> {
-		const text = await readFile(this.sidecarPath(), "utf8");
+	private parseSidecar(text: string): BlockRow[] {
 		const rows: BlockRow[] = [];
 		for (const line of text.split("\n")) {
 			if (line.trim().length === 0) continue;
@@ -214,49 +211,61 @@ export class HistoryIndex {
 		return rows;
 	}
 
-	private async acquireLock(lockPath: string): Promise<() => Promise<void>> {
-		for (let attempt = 0; ; attempt += 1) {
+	private async loadSidecar(): Promise<BlockRow[]> {
+		let entries: string[];
+		try {
+			entries = await readdir(this.sidecarDir);
+		} catch {
+			return [];
+		}
+		const candidates: Array<{ name: string; mtime: number }> = [];
+		for (const name of [...entries]) {
+			if (name !== "sidecar.jsonl" && !/^sidecar\.\d+\.jsonl$/.test(name)) continue;
 			try {
-				const handle = await open(lockPath, "wx");
-				return async () => {
-					await handle.close();
-					await rm(lockPath, { force: true });
-				};
+				const s = await stat(join(this.sidecarDir, name));
+				candidates.push({ name, mtime: s.mtimeMs });
 			} catch {
-				try {
-					const s = await stat(lockPath);
-					if (Date.now() - s.mtimeMs > 10000) {
-						await rm(lockPath, { force: true });
-						continue;
-					}
-				} catch {
-					continue;
-				}
-				if (attempt > 50) throw new Error("sidecar lock contention");
-				await new Promise((resolve) => setTimeout(resolve, 100));
 			}
 		}
+		candidates.sort((a, b) => b.mtime - a.mtime);
+		for (const { name } of candidates) {
+			try {
+				const text = await readFile(join(this.sidecarDir, name), "utf8");
+				const rows = this.parseSidecar(text);
+				if (rows.length > 0) return rows;
+			} catch {
+			}
+		}
+		return [];
 	}
 
-	private async persistSidecar(rows: BlockRow[], readSignature: string): Promise<void> {
-		const run = this.persistChain.then(() => this.persistLocked(rows, readSignature));
-		this.persistChain = run.catch(() => {});
-		await run;
+	private sidecarFile(): string {
+		return join(this.sidecarDir, `sidecar.${process.pid}.jsonl`);
 	}
 
-	private async persistLocked(rows: BlockRow[], readSignature: string): Promise<void> {
+	private async persistSidecar(rows: BlockRow[]): Promise<void> {
 		await mkdir(this.sidecarDir, { recursive: true });
-		const lockPath = join(this.sidecarDir, "sidecar.lock");
-		const release = await this.acquireLock(lockPath);
+		const tmp = join(this.sidecarDir, `sidecar.${process.pid}.tmp`);
+		await writeFile(tmp, rows.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+		await rename(tmp, this.sidecarFile());
+		await this.sweepStaleSnapshots();
+	}
+
+	private async sweepStaleSnapshots(): Promise<void> {
 		try {
-			const current = await this.currentSignature();
-			if (current !== readSignature) return;
-			this.persistSeq += 1;
-			const tmp = join(this.sidecarDir, `sidecar.${process.pid}.${this.persistSeq}.tmp`);
-			await writeFile(tmp, rows.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
-			await rename(tmp, this.sidecarPath());
-		} finally {
-			await release();
+			const entries = await readdir(this.sidecarDir);
+			const cutoff = Date.now() - 3600_000;
+			for (const name of entries) {
+				if (!/^sidecar\.\d+\.jsonl$/.test(name)) continue;
+				const full = join(this.sidecarDir, name);
+				if (full === this.sidecarFile()) continue;
+				try {
+					const s = await stat(full);
+					if (s.mtimeMs < cutoff) await rm(full, { force: true });
+				} catch {
+				}
+			}
+		} catch {
 		}
 	}
 
@@ -342,7 +351,7 @@ export class HistoryIndex {
 			const payload = rows.map((r) => JSON.stringify(r)).join("\n");
 			if (payload !== this.lastPayload) {
 				try {
-					await this.persistSidecar(rows, signature);
+					await this.persistSidecar(rows);
 					if (epoch !== this.epoch) return this.available;
 					this.lastPayload = payload;
 					this.persistFailed = false;

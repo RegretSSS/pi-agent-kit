@@ -21,8 +21,9 @@ def test_seed_builds_sidecar(tmp_path) -> None:
     out = drive(tmp_path, "seed")
     assert out["refreshed"] is True
     assert out["available"] is True
-    assert (tmp_path / "sidecar" / "sidecar.jsonl").exists()
-    lines = (tmp_path / "sidecar" / "sidecar.jsonl").read_text().strip().split("\n")
+    snapshots = list((tmp_path / "sidecar").glob("sidecar.*.jsonl"))
+    assert len(snapshots) == 1
+    lines = snapshots[0].read_text().strip().split("\n")
     assert len(lines) == 5
     first = json.loads(lines[0])
     assert first["topic"] == "整理ClaudeCode记忆入memory系统"
@@ -165,3 +166,19 @@ def test_gc_shrink_leaves_no_ghost_blocks(tmp_path) -> None:
     assert out["source"] == "sidecar"
     assert out["sessions"] == ["01a1a94b-7621"]
     assert all(not s.startswith(("01a1a77", "01a1a78")) for s in out["sessions"])
+
+
+def test_readonly_sidecar_dir_never_spins(tmp_path) -> None:
+    out = drive(tmp_path, "ro-sidecar")
+    assert out["refreshed"] is True
+    assert out["elapsedMs"] < 5000
+    assert out["available"] is True
+    assert out["source"] == "db"
+    assert len(out["hits"]) >= 2
+
+
+def test_fallback_reads_newest_snapshot(tmp_path) -> None:
+    out = drive(tmp_path, "multi-snapshot")
+    assert out["refreshed"] is True
+    assert out["source"] == "sidecar"
+    assert out["sessions"] == ["s-new"]

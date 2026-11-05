@@ -60,7 +60,7 @@ export default async function (pi: ExtensionAPI) {
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const historyActive = await historyLikelyActive();
 			const merged = pending === null ? params.brief : `${pending.brief}\n---\n${params.brief}`;
-			pending = { brief: Array.from(merged).slice(0, MERGED_BRIEF_CODEPOINTS).join(""), historyActive };
+			pending = { brief: Array.from(merged).slice(-MERGED_BRIEF_CODEPOINTS).join(""), historyActive };
 			return {
 				content: [{ type: "text", text: "compaction scheduled for the next turn boundary" }],
 				details: {},
