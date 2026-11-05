@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
-import { rm } from "node:fs/promises";
-import { HistoryIndex, formatOutline, scoreRow, splitTerms } from "../extensions/history.ts";
+import { rm, readFile } from "node:fs/promises";
+import { HistoryIndex, formatOutline, scoreRow, splitTerms, buildTools } from "../extensions/history.ts";
 import { buildCompactInstructions } from "../extensions/compact-instructions.ts";
 
 const [root, scenario, payload] = process.argv.slice(2);
@@ -8,18 +8,36 @@ const dbPath = `${root}/bili.db`;
 const sidecarDir = `${root}/sidecar`;
 const out = {};
 
+const fakeType = {
+	Object: (o) => o,
+	String: (o) => ({ kind: "string", ...o }),
+	Optional: (s) => ({ kind: "optional", of: s }),
+	Integer: (o) => ({ kind: "integer", ...o }),
+};
+
 function seedDb() {
 	const db = new DatabaseSync(dbPath);
-	db.exec("CREATE TABLE blocks (session_id TEXT, block_id TEXT, ord INTEGER, tier INTEGER, start_seq INTEGER, end_seq INTEGER, payload_json TEXT)");
-	const mk = (session, blockId, ord, start, end, topic, summary, tokens) =>
-		db.prepare("INSERT INTO blocks VALUES (?,?,?,?,?,?,?)").run(
-			session, blockId, ord, 1, start, end,
-			JSON.stringify({ blockId, tier: 1, topic, summary, compressedTokens: tokens, directMessageIds: [], effectiveMessageIds: [] }),
+	db.exec("CREATE TABLE blocks (session_id TEXT, block_id TEXT, ord INTEGER, tier INTEGER, active INTEGER, start_seq INTEGER, end_seq INTEGER, payload_json TEXT)");
+	const mk = (session, blockId, ord, active, start, end, topic, summary, tokens) =>
+		db.prepare("INSERT INTO blocks VALUES (?,?,?,?,?,?,?,?)").run(
+			session, blockId, ord, 1, active, start, end,
+			JSON.stringify({ blockId, tier: 1, topic, summary, compressedTokens: tokens }),
 		);
-	mk("01a1a774-48cc", "b1", 0, 0, 82, "整理ClaudeCode记忆入memory系统", "用户指令:整理之前ClaudeCode在这个仓库工作时的记忆,列入记忆系统。当前会话是普通交互式pi会话。".repeat(3), 55647);
-	mk("01a1a774-48cc", "b2", 1, 83, 129, "夜间深挖第一轮:新规范载体pi-agent-kit", "夜间深挖,用户要求多了解项目。民法典重灌状态从待核实测为已闭环,dev库127.0.0.1:15432。", 28965);
-	mk("01a1a94b-7621", "b1", 0, 0, 40, "看mailbox里都有谁", "调用mail_who查看了所有agent状态。", 1200);
-	mk("01a1a94b-7621", "b2", 1, 41, 90, "民法典重灌状态实测闭环", "重灌状态实测闭环,生产71号2017已于10-26换A10正式件重灌285chunks。", 800);
+	mk("01a1a774-48cc", "b1", 0, 1, 0, 82, "整理ClaudeCode记忆入memory系统", "用户指令:整理之前ClaudeCode在这个仓库工作时的记忆,列入记忆系统。".repeat(3), 55647);
+	mk("01a1a774-48cc", "b2", 1, 1, 83, 129, "夜间深挖第一轮:新规范载体pi-agent-kit", "夜间深挖。民法典重灌状态从待核实测为已闭环,dev库127.0.0.1:15432。", 28965);
+	mk("01a1a784-b231", "b1", 0, 1, 0, 40, "git log 页1", "只读分析全部1370 commit,按月聚合。", 1200);
+	mk("01a1a784-b23c", "b1", 0, 1, 0, 40, "docs 探索启动", "docs 目录第一轮探索,民法典在册件替换重灌。", 900);
+	mk("01a1a94b-7621", "b2", 1, 0, 41, 90, "民法典重灌状态实测闭环(旧代)", "重灌状态实测闭环,71号2017已换A10正式件。", 800);
+	db.close();
+}
+
+function seedBig() {
+	const db = new DatabaseSync(dbPath);
+	db.exec("CREATE TABLE blocks (session_id TEXT, block_id TEXT, ord INTEGER, tier INTEGER, active INTEGER, start_seq INTEGER, end_seq INTEGER, payload_json TEXT)");
+	const stmt = db.prepare("INSERT INTO blocks VALUES (?,?,?,?,?,?,?,?)");
+	for (let i = 0; i < 14; i += 1) {
+		stmt.run(`sess${i}`, `b${i}`, 0, 1, 1, 0, 9, JSON.stringify({ blockId: `b${i}`, tier: 1, topic: `批次${i}巡检`, summary: `第${i}批巡检发现民法典重灌相关线索${i}号`, compressedTokens: 100 }));
+	}
 	db.close();
 }
 
@@ -31,21 +49,26 @@ switch (scenario) {
 		out.available = idx.isAvailable();
 		break;
 	}
+	case "seed-big": {
+		seedBig();
+		const idx = new HistoryIndex(dbPath, sidecarDir);
+		out.refreshed = await idx.refresh();
+		break;
+	}
 	case "search": {
 		const { query, session, limit } = JSON.parse(payload);
 		const idx = new HistoryIndex(dbPath, sidecarDir);
 		const hits = await idx.search(query, session, limit ?? 5);
-		out.hits = hits.map((h) => ({ block: h.row.blockId, session: h.row.session, score: h.score, hitTerms: h.hitTerms }));
+		out.hits = hits.map((h) => ({ block: h.row.blockId, session: h.row.session, active: h.row.active, score: h.score }));
 		break;
 	}
 	case "search-bigram": {
 		const idx = new HistoryIndex(dbPath, sidecarDir);
-		const hits = await idx.search("民法典重灌状态");
-		out.hits = hits.map((h) => h.row.blockId);
+		out.hits = (await idx.search("民法典重灌状态")).map((h) => h.row.blockId);
 		break;
 	}
 	case "outline-budget": {
-		const blocks = Array.from({ length: 20 }, (_, i) => ({ session: "s" + i, blockId: "b" + i, ord: i, tier: 1, topic: "bulk" + i, startSeq: 0, endSeq: 9, tokens: 1, summary: "关键词".repeat(1500) }));
+		const blocks = Array.from({ length: 20 }, (_, i) => ({ session: "s" + i, blockId: "b" + i, ord: i, tier: 1, active: true, topic: "bulk" + i, startSeq: 0, endSeq: 9, tokens: 1, summary: "关键词".repeat(1500) }));
 		const terms = splitTerms("关键词");
 		const scored = blocks.map((b) => scoreRow(b, terms)).filter(Boolean);
 		const formatted = formatOutline(scored, 600);
@@ -56,9 +79,57 @@ switch (scenario) {
 	case "read": {
 		const { session, block, around } = JSON.parse(payload);
 		const idx = new HistoryIndex(dbPath, sidecarDir);
-		const text = await idx.readBlock(session, block, around);
-		out.text = text === null ? null : text.slice(0, 300);
-		out.isNull = text === null;
+		const outcome = await idx.readBlock(session, block, around);
+		out.status = outcome.status;
+		if (outcome.status === "ok") {
+			out.session = outcome.row.session;
+			out.active = outcome.row.active;
+			out.text = outcome.text.slice(0, 300);
+		}
+		if (outcome.status === "ambiguous") out.candidates = outcome.candidates;
+		break;
+	}
+	case "execute-search": {
+		const { query, limit } = JSON.parse(payload);
+		const idx = new HistoryIndex(dbPath, sidecarDir);
+		const [tool] = buildTools(fakeType, idx);
+		const r = await tool.execute("t1", { query, limit });
+		out.textHead = r.content[0].text.slice(0, 120);
+		out.hits = (r.details.hits ?? []).map((h) => ({ session: h.session, topicLen: (h.topic ?? "").length, active: h.active }));
+		out.truncated = r.details.truncated ?? null;
+		break;
+	}
+	case "execute-read": {
+		const { session, block } = JSON.parse(payload);
+		const idx = new HistoryIndex(dbPath, sidecarDir);
+		const [, tool] = buildTools(fakeType, idx);
+		const r = await tool.execute("t1", { session, block });
+		out.isError = r.isError === true;
+		out.head = r.content[0].text.slice(0, 160);
+		out.details = r.details;
+		break;
+	}
+	case "execute-unavailable": {
+		const idx = new HistoryIndex(`${root}/nope.db`, `${root}/no-sidecar`);
+		const [tool] = buildTools(fakeType, idx);
+		const r = await tool.execute("t1", { query: "x" });
+		out.available = r.details.available;
+		out.text = r.content[0].text.slice(0, 120);
+		break;
+	}
+	case "empty-table": {
+		seedDb();
+		const first = new HistoryIndex(dbPath, sidecarDir);
+		await first.refresh();
+		const before = await readFile(`${sidecarDir}/sidecar.jsonl`, "utf8");
+		const db = new DatabaseSync(dbPath);
+		db.exec("PRAGMA busy_timeout = 3000");
+		db.exec("DELETE FROM blocks");
+		db.close();
+		const second = new HistoryIndex(dbPath, sidecarDir);
+		out.refreshed = await second.refresh();
+		out.available = second.isAvailable();
+		out.sidecarUnchanged = (await readFile(`${sidecarDir}/sidecar.jsonl`, "utf8")) === before;
 		break;
 	}
 	case "stale": {
@@ -66,8 +137,7 @@ switch (scenario) {
 		const idx = new HistoryIndex(dbPath, sidecarDir);
 		out.refreshed = await idx.refresh();
 		out.available = idx.isAvailable();
-		const hits = await idx.search("民法典");
-		out.hits = hits.map((h) => h.row.blockId);
+		out.hits = (await idx.search("民法典")).map((h) => h.row.blockId);
 		break;
 	}
 	case "unavailable": {

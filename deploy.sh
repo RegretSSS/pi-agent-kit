@@ -19,36 +19,63 @@ snippet = pathlib.Path("agents-md/snippet.md").read_text()
 headings = ["## 问题即 lint", "## codemode 选取"]
 
 
-def sections_of(text):
-    found = {}
-    for heading in headings:
-        start = text.find(heading)
-        if start == -1:
+def heading2_indexes(lines):
+    fence = False
+    starts = []
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("```"):
+            fence = not fence
             continue
-        ends = [text.find(h, start + len(heading)) for h in headings if h != heading]
-        ends = [e for e in ends if e != -1]
-        found[heading] = text[start : min(ends) if ends else len(text)].rstrip("\n")
-    return found
+        if fence:
+            continue
+        if line.startswith("## "):
+            starts.append(i)
+    return starts
 
 
-managed = sections_of(snippet)
-text = target.read_text()
-existing = sections_of(text)
-out = text
+def section_lines(text, heading):
+    lines = text.split("\n")
+    starts = heading2_indexes(lines)
+    for i in starts:
+        if lines[i] == heading:
+            end = next((j for j in starts if j > i), len(lines))
+            body = lines[i:end]
+            while body and body[-1].strip() == "":
+                body.pop()
+            return body
+    return None
+
+
+managed = {h: section_lines(snippet, h) for h in headings}
+lines = target.read_text().split("\n")
+starts = heading2_indexes(lines)
+changed = []
 for heading in headings:
-    if heading not in managed:
+    body = managed[heading]
+    if body is None:
         continue
-    if heading in existing:
-        start = out.find(heading)
-        ends = [out.find(h, start + len(heading)) for h in headings if h != heading]
-        ends = [e for e in ends if e != -1]
-        end = min(ends) if ends else len(out)
-        out = out[:start].rstrip("\n") + "\n\n" + managed[heading] + "\n" + (out[end:].lstrip("\n") if end < len(out) else "")
-        print(f"agents-md: refreshed {heading}")
-    else:
-        out = out.rstrip("\n") + "\n\n" + managed[heading] + "\n"
-        print(f"agents-md: appended {heading}")
-target.write_text(out)
+    occurrences = [i for i in starts if lines[i] == heading]
+    if not occurrences:
+        while lines and lines[-1].strip() == "":
+            lines.pop()
+        lines += ["", *body, ""]
+        changed.append(f"appended {heading}")
+        continue
+    for i in reversed(occurrences):
+        end = next((j for j in starts if j > i), len(lines))
+        replacement = list(body)
+        if end < len(lines):
+            replacement.append("")
+        lines[i:end] = replacement
+        starts = heading2_indexes(lines)
+    changed.append(f"refreshed {heading}" + (" (x%d)" % len(occurrences) if len(occurrences) > 1 else ""))
+while lines and lines[-1] == "":
+    lines.pop()
+if lines:
+    lines.append("")
+target.write_text("\n".join(lines))
+for entry in changed:
+    print(f"agents-md: {entry}")
 PY
 }
 

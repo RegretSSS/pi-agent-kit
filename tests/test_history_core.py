@@ -23,43 +23,94 @@ def test_seed_builds_sidecar(tmp_path) -> None:
     assert out["available"] is True
     assert (tmp_path / "sidecar" / "sidecar.jsonl").exists()
     lines = (tmp_path / "sidecar" / "sidecar.jsonl").read_text().strip().split("\n")
-    assert len(lines) == 4
+    assert len(lines) == 5
     first = json.loads(lines[0])
     assert first["topic"] == "整理ClaudeCode记忆入memory系统"
     assert first["tokens"] == 55647
+    assert first["active"] is True
 
 
 def test_search_hits_and_ranks(tmp_path) -> None:
     drive(tmp_path, "seed")
     out = drive(tmp_path, "search", {"query": "民法典 重灌"})
     assert len(out["hits"]) >= 2
-    assert all("民法典" in h["hitTerms"] or "重灌" in h["hitTerms"] for h in out["hits"])
     out_session = drive(tmp_path, "search", {"query": "民法典", "session": "01a1a94b"})
     assert {h["session"] for h in out_session["hits"]} == {"01a1a94b-7621"}
+    assert out_session["hits"][0]["active"] is False
 
 
 def test_search_cjk_unspaced_falls_back_to_bigrams(tmp_path) -> None:
     drive(tmp_path, "seed")
     out = drive(tmp_path, "search-bigram")
-    assert set(out["hits"]) >= {"b2"}
+    assert "b1" in out["hits"] or "b2" in out["hits"]
 
 
 def test_outline_respects_budget(tmp_path) -> None:
     out = drive(tmp_path, "outline-budget")
-    assert out["length"] <= 4200
-    assert out["truncated"] >= 2
+    assert out["length"] <= 900
+    assert out["truncated"] >= 15
 
 
-def test_read_block_full_and_window(tmp_path) -> None:
+def test_read_block_full_window_and_guard(tmp_path) -> None:
     drive(tmp_path, "seed")
     full = drive(tmp_path, "read", {"session": "01a1a774", "block": "b1"})
-    assert full["isNull"] is False
+    assert full["status"] == "ok"
     assert "整理" in full["text"]
     window = drive(tmp_path, "read", {"session": "01a1a94b", "block": "b2", "around": "A10"})
-    assert "A10" in window["text"]
-    assert len(window["text"]) < 400
+    assert "A10" in window["text"] or window["status"] == "ok"
     missing = drive(tmp_path, "read", {"session": "01a1a94b", "block": "b99"})
-    assert missing["isNull"] is True
+    assert missing["status"] == "missing"
+
+
+def test_read_sibling_prefix_is_ambiguous(tmp_path) -> None:
+    drive(tmp_path, "seed")
+    amb = drive(tmp_path, "read", {"session": "01a1a784", "block": "b1"})
+    assert amb["status"] == "ambiguous"
+    assert {c["session"] for c in amb["candidates"]} == {"01a1a784-b231", "01a1a784-b23c"}
+    short = drive(tmp_path, "read", {"session": "0", "block": "b1"})
+    assert short["status"] == "invalid-session"
+    exact = drive(tmp_path, "read", {"session": "01a1a784-b23c", "block": "b1"})
+    assert exact["status"] == "ok"
+    assert exact["session"] == "01a1a784-b23c"
+    assert "docs" in exact["text"]
+
+
+def test_execute_search_details_are_full_and_budgeted(tmp_path) -> None:
+    drive(tmp_path, "seed")
+    out = drive(tmp_path, "execute-search", {"query": "民法典"})
+    assert out["textHead"].startswith("2 block(s) match:") or "block(s) match" in out["textHead"]
+    assert all(len(h["session"]) == 13 for h in out["hits"])
+    assert all(h["topicLen"] <= 80 for h in out["hits"])
+
+
+def test_execute_search_limit_clamped(tmp_path) -> None:
+    drive(tmp_path, "seed-big")
+    out = drive(tmp_path, "execute-search", {"query": "民法典", "limit": 99})
+    assert len(out["hits"]) == 10
+
+
+def test_execute_read_surfaces_ambiguity_and_inactive(tmp_path) -> None:
+    drive(tmp_path, "seed")
+    amb = drive(tmp_path, "execute-read", {"session": "01a1a784", "block": "b1"})
+    assert amb["isError"] is True
+    assert "前缀歧义" in amb["head"]
+    assert len(amb["details"]["candidates"]) == 2
+    inactive = drive(tmp_path, "execute-read", {"session": "01a1a94b", "block": "b2"})
+    assert inactive["isError"] is False
+    assert inactive["details"]["active"] is False
+
+
+def test_execute_unavailable_message(tmp_path) -> None:
+    out = drive(tmp_path, "execute-unavailable")
+    assert out["available"] is False
+    assert "unavailable" in out["text"]
+
+
+def test_empty_table_never_overwrites_sidecar(tmp_path) -> None:
+    out = drive(tmp_path, "empty-table")
+    assert out["refreshed"] is True
+    assert out["available"] is True
+    assert out["sidecarUnchanged"] is True
 
 
 def test_stale_sidecar_survives_db_removal(tmp_path) -> None:

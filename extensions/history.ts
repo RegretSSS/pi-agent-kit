@@ -7,9 +7,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 const PREVIEW_RADIUS = 120;
 const PREVIEW_FALLBACK = 160;
 const WINDOW_RADIUS = 500;
-export const OUTLINE_BUDGET = 4000;
+const OUTLINE_BUDGET = 4000;
 const READ_BUDGET = 8000;
 const DEFAULT_LIMIT = 5;
+const MAX_LIMIT = 10;
+const SESSION_ID_RADIUS = 18;
+const TOPIC_BUDGET = 80;
 const CJK = /[一-鿿]/;
 
 export type BlockRow = {
@@ -17,6 +20,7 @@ export type BlockRow = {
 	blockId: string;
 	ord: number;
 	tier: number;
+	active: boolean;
 	topic: string;
 	startSeq: number;
 	endSeq: number;
@@ -25,6 +29,20 @@ export type BlockRow = {
 };
 
 export type ScoredBlock = { row: BlockRow; score: number; hitTerms: string[] };
+
+export type ReadOutcome =
+	| { status: "ok"; text: string; row: BlockRow }
+	| { status: "missing" }
+	| { status: "ambiguous"; candidates: Array<{ session: string; topic: string }> }
+	| { status: "invalid-session" }
+	| { status: "unavailable" };
+
+export type TypeBoxLike = {
+	Object: (schema: Record<string, unknown>) => unknown;
+	String: (opts?: Record<string, unknown>) => unknown;
+	Optional: (schema: unknown) => unknown;
+	Integer: (opts?: Record<string, unknown>) => unknown;
+};
 
 function defaultDbPath(): string {
 	return join(homedir(), ".local/share/billion-context/sessions/index.db");
@@ -65,13 +83,12 @@ export function scoreRow(row: BlockRow, terms: string[]): ScoredBlock | null {
 		}
 	}
 	if (hitTerms.length === 0) return null;
-	if (row.topic.toLowerCase().split(/\s+/).some((w) => hitTerms.some((t) => w.includes(t)))) score += 0.5;
+	if (row.topic.toLowerCase().includes(hitTerms[0])) score += 0.5;
 	return { row, score, hitTerms };
 }
 
 export function windowAround(text: string, term: string, radius: number): string {
-	const lower = text.toLowerCase();
-	const idx = lower.indexOf(term.toLowerCase());
+	const idx = text.toLowerCase().indexOf(term.toLowerCase());
 	if (idx === -1) return text.slice(0, radius * 2);
 	const start = Math.max(0, idx - radius);
 	const end = Math.min(text.length, idx + term.length + radius);
@@ -102,21 +119,25 @@ export function mergeWindows(text: string, terms: string[], radius: number): str
 export function formatOutline(hits: ScoredBlock[], budget: number): { text: string; truncated: number } {
 	const lines: string[] = [];
 	let used = 0;
+	let shown = 0;
 	let truncated = 0;
 	for (const hit of hits) {
 		const row = hit.row;
-		const head = `[${row.blockId}] ${row.session.slice(0, 8)} · ${row.topic} · ${row.summary.length}ch m${row.startSeq}-m${row.endSeq}`;
-		const preview = "  " + (hit.hitTerms.length > 0 ? windowAround(row.summary, hit.hitTerms[0], PREVIEW_RADIUS) : row.summary.slice(0, PREVIEW_FALLBACK));
+		const flag = row.active ? "" : "|inactive";
+		const head = `[${row.blockId}${flag}] ${row.session.slice(0, SESSION_ID_RADIUS)} · ${row.topic.slice(0, TOPIC_BUDGET)} · ${row.summary.length}ch m${row.startSeq}-m${row.endSeq}`;
+		const inSummary = hit.hitTerms.find((t) => row.summary.toLowerCase().includes(t));
+		const preview = "  " + (inSummary ? windowAround(row.summary, inSummary, PREVIEW_RADIUS) : row.summary.slice(0, PREVIEW_FALLBACK));
 		const block = head + "\n" + preview;
-		if (used + block.length > budget) {
-			truncated = hits.length - lines.length / 2;
+		if (used + block.length + 60 > budget) {
+			truncated = hits.length - shown;
 			break;
 		}
 		used += block.length;
 		lines.push(head, preview);
+		shown += 1;
 	}
 	const suffix = truncated > 0 ? `\n[truncated ${truncated} blocks — refine the query]` : "";
-	const drill = lines.length > 0 ? `\ndrill: history_read(session, block, around="term")` : "";
+	const drill = shown > 0 ? "\ndrill: history_read(session=<full id from details>, block, around=\"term\")" : "";
 	return { text: `${lines.join("\n")}${suffix}${drill}`, truncated };
 }
 
@@ -142,12 +163,34 @@ export class HistoryIndex {
 
 	private async loadSidecar(): Promise<BlockRow[]> {
 		const text = await readFile(this.sidecarPath(), "utf8");
-		return text.split("\n").filter((l) => l.trim().length > 0).map((l) => JSON.parse(l) as BlockRow);
+		const rows: BlockRow[] = [];
+		for (const line of text.split("\n")) {
+			if (line.trim().length === 0) continue;
+			try {
+				const parsed = JSON.parse(line) as Record<string, unknown>;
+				if (typeof parsed.session !== "string" || typeof parsed.summary !== "string") continue;
+				rows.push({
+					session: parsed.session,
+					blockId: String(parsed.blockId ?? ""),
+					ord: Number(parsed.ord ?? 0),
+					tier: Number(parsed.tier ?? 1),
+					active: parsed.active !== false,
+					topic: typeof parsed.topic === "string" ? parsed.topic : "",
+					startSeq: Number(parsed.startSeq ?? 0),
+					endSeq: Number(parsed.endSeq ?? 0),
+					tokens: Number(parsed.tokens ?? 0),
+					summary: parsed.summary,
+				});
+			} catch {
+				continue;
+			}
+		}
+		return rows;
 	}
 
 	private async persistSidecar(rows: BlockRow[]): Promise<void> {
 		await mkdir(this.sidecarDir, { recursive: true });
-		const tmp = join(this.sidecarDir, "sidecar.tmp");
+		const tmp = join(this.sidecarDir, `sidecar.${process.pid}.tmp`);
 		await writeFile(tmp, rows.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
 		await rename(tmp, this.sidecarPath());
 	}
@@ -157,105 +200,133 @@ export class HistoryIndex {
 		db.exec("PRAGMA busy_timeout = 3000");
 		const out: BlockRow[] = [];
 		try {
-			const rows = db.prepare("SELECT session_id, block_id, ord, tier, start_seq, end_seq, payload_json FROM blocks ORDER BY session_id, ord").all() as Array<Record<string, unknown>>;
+			const rows = db.prepare("SELECT session_id, block_id, ord, tier, active, start_seq, end_seq, payload_json FROM blocks ORDER BY session_id, ord").all() as Array<Record<string, unknown>>;
 			for (const r of rows) {
-				let payload: Record<string, unknown>;
 				try {
-					payload = JSON.parse(String(r.payload_json)) as Record<string, unknown>;
+					const payload = JSON.parse(String(r.payload_json)) as Record<string, unknown>;
+					if (payload === null || typeof payload !== "object") continue;
+					const topic = typeof payload.topic === "string" ? payload.topic : "";
+					const summary = typeof payload.summary === "string" ? payload.summary : "";
+					if (topic.length === 0 && summary.length === 0) continue;
+					out.push({
+						session: String(r.session_id),
+						blockId: String(r.block_id),
+						ord: Number(r.ord ?? 0),
+						tier: Number(r.tier ?? 1),
+						active: Number(r.active ?? 1) === 1,
+						topic,
+						startSeq: Number(r.start_seq ?? 0),
+						endSeq: Number(r.end_seq ?? 0),
+						tokens: Number(payload.compressedTokens ?? 0),
+						summary,
+					});
 				} catch {
 					continue;
 				}
-				out.push({
-					session: String(r.session_id),
-					blockId: String(r.block_id),
-					ord: Number(r.ord),
-					tier: Number(r.tier),
-					topic: typeof payload.topic === "string" ? payload.topic : "",
-					startSeq: Number(r.start_seq),
-					endSeq: Number(r.end_seq),
-					tokens: Number(payload.compressedTokens ?? 0),
-					summary: typeof payload.summary === "string" ? payload.summary : "",
-				});
 			}
 		} finally {
 			db.close();
 		}
+		if (out.length === 0) throw new Error("blocks table empty or unreadable");
 		return out;
 	}
 
-	async refresh(): Promise<boolean> {
-		let signature = "";
-		try {
-			const s = await stat(this.dbPath);
-			signature = `${s.mtimeMs}:${s.size}`;
-		} catch {
-			if (this.rows !== null) return true;
+	private async currentSignature(): Promise<string | null> {
+		const parts: string[] = [];
+		for (const p of [this.dbPath, `${this.dbPath}-wal`]) {
 			try {
-				this.rows = await this.loadSidecar();
-				this.available = true;
-				return true;
+				const s = await stat(p);
+				parts.push(`${s.mtimeMs}:${s.size}`);
 			} catch {
-				this.available = false;
-				return false;
+				if (p === this.dbPath) return null;
 			}
 		}
+		return parts.join("|");
+	}
+
+	async refresh(): Promise<boolean> {
+		const signature = await this.currentSignature();
+		if (signature === null) return this.fallback();
 		if (signature === this.signature && this.rows !== null) return true;
 		try {
-			this.rows = this.readBlocks();
+			const rows = this.readBlocks();
+			await this.persistSidecar(rows);
+			this.rows = rows;
 			this.signature = signature;
 			this.available = true;
-			await this.persistSidecar(this.rows);
 			return true;
 		} catch {
-			if (this.rows !== null) return true;
-			try {
-				this.rows = await this.loadSidecar();
-				this.available = true;
-				return true;
-			} catch {
+			return this.fallback();
+		}
+	}
+
+	private async fallback(): Promise<boolean> {
+		if (this.rows !== null) {
+			this.available = true;
+			return true;
+		}
+		try {
+			const rows = await this.loadSidecar();
+			if (rows.length === 0) {
 				this.available = false;
 				return false;
 			}
+			this.rows = rows;
+			this.available = true;
+			return true;
+		} catch {
+			this.available = false;
+			return false;
 		}
 	}
 
 	async search(query: string, session?: string, limit = DEFAULT_LIMIT): Promise<ScoredBlock[]> {
 		if (!(await this.refresh()) || this.rows === null) return [];
 		const terms = splitTerms(query);
-		const pool = session ? this.rows.filter((r) => r.session === session || r.session.startsWith(session)) : this.rows;
-		return pool.map((r) => scoreRow(r, terms)).filter((s): s is ScoredBlock => s !== null).sort((a, b) => b.score - a.score).slice(0, limit);
+		const pool = session && session.length > 0 ? this.rows.filter((r) => r.session === session || r.session.startsWith(session)) : this.rows;
+		return pool.map((r) => scoreRow(r, terms)).filter((s): s is ScoredBlock => s !== null).sort((a, b) => b.score - a.score).slice(0, Math.max(1, Math.min(limit, MAX_LIMIT)));
 	}
 
-	async readBlock(session: string, block: string, around?: string): Promise<string | null> {
-		if (!(await this.refresh()) || this.rows === null) return null;
-		const row = this.rows.find((r) => (r.session === session || r.session.startsWith(session)) && r.blockId === block);
-		if (!row) return null;
-		if (!around) return row.summary.slice(0, READ_BUDGET);
-		const terms = splitTerms(around);
-		if (terms.length === 0) return row.summary.slice(0, READ_BUDGET);
-		const text = mergeWindows(row.summary, terms, WINDOW_RADIUS);
-		return text.length > READ_BUDGET ? text.slice(0, READ_BUDGET) + "…" : text;
+	async readBlock(session: string, block: string, around?: string): Promise<ReadOutcome> {
+		if (!(await this.refresh()) || this.rows === null) return { status: "unavailable" };
+		if (typeof session !== "string" || session.trim().length < 4) return { status: "invalid-session" };
+		const matches = this.rows.filter((r) => (r.session === session || r.session.startsWith(session)) && r.blockId === block);
+		if (matches.length === 0) return { status: "missing" };
+		const sessions = [...new Set(matches.map((m) => m.session))];
+		if (sessions.length > 1) {
+			return { status: "ambiguous", candidates: matches.map((m) => ({ session: m.session, topic: m.topic })) };
+		}
+		const row = matches[0];
+		let text: string;
+		if (!around) text = row.summary.slice(0, READ_BUDGET);
+		else {
+			const terms = splitTerms(around);
+			if (terms.length === 0) text = row.summary.slice(0, READ_BUDGET);
+			else {
+				const merged = mergeWindows(row.summary, terms, WINDOW_RADIUS);
+				text = merged.length > READ_BUDGET ? merged.slice(0, READ_BUDGET) + "…" : merged;
+			}
+		}
+		return { status: "ok", text, row };
 	}
 }
 
-export default async function (pi: ExtensionAPI) {
-	const { Type } = await import("typebox");
-	const index = new HistoryIndex();
-
-	pi.registerTool({
+export function buildTools(Type: TypeBoxLike, index: HistoryIndex) {
+	const searchTool = {
 		name: "history_search",
 		label: "History Search",
 		description: [
 			"Search compressed-history block summaries from billion-context across ALL sessions (cross-session recall).",
 			"Returns an outline only: one line + short preview per block, hard budget — refine the query or drill with history_read.",
-			"Works even after compact (sidecar snapshot). Calling convention: in code-mode harnesses call via the generated SDK and consume details structurally.",
+			"Works even after compact (sidecar snapshot). Blocks marked |inactive belong to superseded epochs of a session.",
+			"Calling convention: in code-mode harnesses call via tools.history_search(...); the text result is line-structured (one block per two lines) and safe to parse.",
 		].join(" "),
 		parameters: Type.Object({
 			query: Type.String({ description: "检索词,空格分隔多词(中文长词会自动降级为二字滑窗匹配)" }),
 			session: Type.Optional(Type.String({ description: "可选,限定会话 id(前缀匹配)" })),
-			limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })),
+			limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_LIMIT })),
 		}),
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId: string, params: { query: string; session?: string; limit?: number }) {
 			if (!(await index.refresh())) {
 				return {
 					content: [{ type: "text", text: "history index unavailable: billion-context database not found and no sidecar snapshot exists. Fallback: grep ~/.pi/agent/sessions/*/<session>.jsonl" }],
@@ -269,26 +340,46 @@ export default async function (pi: ExtensionAPI) {
 			const outline = formatOutline(hits, OUTLINE_BUDGET);
 			return {
 				content: [{ type: "text", text: `${hits.length} block(s) match:\n${outline.text}` }],
-				details: { available: true, hits: hits.map((h) => ({ session: h.row.session, block: h.row.blockId, topic: h.row.topic, score: h.score, hitTerms: h.hitTerms })), truncated: outline.truncated },
+				details: {
+					available: true,
+					truncated: outline.truncated,
+					hits: hits.map((h) => ({ session: h.row.session, block: h.row.blockId, active: h.row.active, topic: h.row.topic.slice(0, TOPIC_BUDGET), score: h.score, hitTerms: h.hitTerms })),
+				},
 			};
 		},
-	});
-
-	pi.registerTool({
+	};
+	const readTool = {
 		name: "history_read",
 		label: "History Read",
-		description: "Read one compressed-history block. With `around`: only keyword-centered windows (cheap). Without: the full block summary (budgeted). Calling convention: in code-mode harnesses call via the generated SDK.",
+		description: "Read one compressed-history block. Pass the FULL session id (from history_search details) — short prefixes that match several sessions are rejected with candidates. With `around`: only keyword-centered windows (cheap). Without: the full block summary (budgeted). Calling convention: in code-mode harnesses call via tools.history_read(...); the text result is the block content.",
 		parameters: Type.Object({
-			session: Type.String({ description: "会话 id(前缀匹配)" }),
+			session: Type.String({ description: "完整会话 id(或足够长的唯一前缀,≥4 字符)" }),
 			block: Type.String({ description: "块 id,如 b3" }),
 			around: Type.Optional(Type.String({ description: "关键词,只取其 ±500 字符窗口" })),
 		}),
-		async execute(_toolCallId, params) {
-			const text = await index.readBlock(params.session, params.block, params.around);
-			if (text === null) {
-				return { content: [{ type: "text", text: "块不存在或 history 不可用。用 history_search 先定位。" }], details: { found: false }, isError: true };
+		async execute(_toolCallId: string, params: { session: string; block: string; around?: string }) {
+			const outcome = await index.readBlock(params.session, params.block, params.around);
+			if (outcome.status === "unavailable") {
+				return { content: [{ type: "text", text: "history index unavailable: no database and no sidecar snapshot. Fallback: grep ~/.pi/agent/sessions/*/<session>.jsonl" }], details: { status: outcome.status }, isError: true };
 			}
-			return { content: [{ type: "text", text }], details: { found: true, session: params.session, block: params.block } };
+			if (outcome.status === "invalid-session") {
+				return { content: [{ type: "text", text: "session 参数无效:传完整会话 id或 ≥4 字符的唯一前缀(空/超短前缀会横跨多个会话)。" }], details: { status: outcome.status }, isError: true };
+			}
+			if (outcome.status === "missing") {
+				return { content: [{ type: "text", text: "块不存在。用 history_search 先定位。" }], details: { status: outcome.status }, isError: true };
+			}
+			if (outcome.status === "ambiguous") {
+				const list = outcome.candidates.map((c) => `- ${c.session} · ${c.topic.slice(0, TOPIC_BUDGET)}`).join("\n");
+				return { content: [{ type: "text", text: `会话前缀歧义,该 blockId 命中多个会话,请用完整 id 重试:\n${list}` }], details: { status: outcome.status, candidates: outcome.candidates }, isError: true };
+			}
+			return { content: [{ type: "text", text: outcome.text }], details: { status: "ok", session: outcome.row.session, block: outcome.row.blockId, active: outcome.row.active } };
 		},
-	});
+	};
+	return [searchTool, readTool];
+}
+
+export default async function (pi: ExtensionAPI) {
+	const { Type } = await import("typebox");
+	const index = new HistoryIndex();
+	for (const tool of buildTools(Type, index)) pi.registerTool(tool);
 }
