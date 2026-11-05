@@ -1,8 +1,20 @@
-import { Type } from "typebox";
+import { stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { buildCompactInstructions } from "./compact-instructions.ts";
 
-export default function (pi: ExtensionAPI) {
-	let pendingBrief: string | null = null;
+async function historyLikelyActive(): Promise<boolean> {
+	const db = join(homedir(), ".local/share/billion-context/sessions/index.db");
+	return stat(db).then(
+		() => true,
+		() => false,
+	);
+}
+
+export default async function (pi: ExtensionAPI) {
+	const { Type } = await import("typebox");
+	let pending: { brief: string; historyActive: boolean } | null = null;
 
 	pi.registerTool({
 		name: "compact",
@@ -13,6 +25,8 @@ export default function (pi: ExtensionAPI) {
 			"boundaries when context is getting heavy: long task finished, milestone",
 			"committed, before switching to an unrelated topic. Threshold auto-compaction",
 			"remains only as a fallback; this tool lets you pick the timing and content.",
+			"The generated summary starts with a <fold-index> header (topic | span | key fact | trace)",
+			"so later turns can navigate back into folded history via history_search/history_read.",
 		].join(" "),
 		parameters: Type.Object({
 			brief: Type.String({
@@ -20,7 +34,7 @@ export default function (pi: ExtensionAPI) {
 			}),
 		}),
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			pendingBrief = params.brief;
+			pending = { brief: params.brief, historyActive: await historyLikelyActive() };
 			return {
 				content: [{ type: "text", text: "compaction scheduled for the next turn boundary" }],
 				details: {},
@@ -29,11 +43,11 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
-		if (pendingBrief === null) return;
-		const brief = pendingBrief;
-		pendingBrief = null;
+		if (pending === null) return;
+		const { brief, historyActive } = pending;
+		pending = null;
 		ctx.compact({
-			customInstructions: brief,
+			customInstructions: buildCompactInstructions(brief, historyActive),
 			onError: (error) => {
 				if (ctx.hasUI) ctx.ui.notify(`compact failed: ${error.message}`, "error");
 			},
