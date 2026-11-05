@@ -88,6 +88,6 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 
 ## D11(subagent-jobs 定时任务查询桥,FR5 收窄后)
 
-- **D11-1 job 只读镜像而非管理面**:job_list 直读 `<cwd>/.pi/subagent-schedules/<sessionId>.json`(pi-subagents ScheduleStore 落盘,PID 锁+原子写,读侧天然一致);factory 只注册工具、listJobs 独立成不依赖 typebox 的函数(D3-7 拆分模式,driver 裸 node 可测)。
-- **D11-2 外部写 store 不做 cancel**:上游 executeJob 源码注释明证——fire 时「does not reload from disk」,timer 与内存 cache 均不看文件,「a file deleted directly from a shell」不被感知,外部删除后 job 照 spawn;改动必须走 /agents 或 Agent 调用。cancel/reschedule 缺口属上游(RPC 面只有 ping/spawn/stop/consume/steer,无 schedule 方法),kit 不做 hack(本地 patch 会被 pi update 覆盖且不可迁移);建议上游 PR 补 subagents:rpc:schedule_list/remove,kit 可代起草。
+- **D11-1 job_list 双源:RPC 实时态优先,文件镜像降级**:job_list 直读 `<cwd>/.pi/subagent-schedules/<sessionId>.json`(pi-subagents ScheduleStore 落盘,PID 锁+原子写,读侧天然一致);factory 只注册工具、listJobs 独立成不依赖 typebox 的函数(D3-7 拆分模式,driver 裸 node 可测)。
+- **D11-2 写通道=本地 patch 注入 schedule RPC(脚本化,非一次性 hack)**:上游无模型侧写通道(executeJob 源码注释明证 fire 不 reload from disk,外部改文件后 timer 照 spawn;RPC 面只有 ping/spawn/stop/consume/steer)。落地为 `scripts/patch-subagents-schedule-rpc.mjs`:锚点注入 getScheduler 依赖 + schedule_list/remove/update 三个 handler(幂等可重跑,上游升级锚点失配时报错退出而非静默错注);失败语义用 throw(handleRpc 把返回值包成 data,不 throw 则失败被吞)。kit 侧 job_cancel/job_reschedule 走 pi.events RPC(同进程事件总线,毫秒级往返,非跨回合等待);job_list RPC 优先(实时态含 nextRun)文件降级(未 patch 机器 list 仍可用)。已知边界:pi update 覆盖后需重跑 patch(deploy.sh 自动重试);上游收 PR 后 patch 锚点自然失配退出,转正。
 - **D11-3 重启后 job 会 fire 的代码级实证**:scheduler.start() 在 session 加载时 new ScheduleStore(构造即从磁盘 load)并 arm 全部 enabled job——「面板列着≠会响」的疑点由源码闭环,无需等次日验证。job 落盘为 session 级(store 文件名=sessionId),/resume 重载;pi --session 恢复即重 arm。

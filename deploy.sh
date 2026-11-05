@@ -130,6 +130,8 @@ install_skills() {
 main() {
 	install_agents_md
 	install_extensions
+	node scripts/patch-subagents-schedule-rpc.mjs || echo "warn: schedule-rpc patch 未应用(上游升级或未安装 pi-subagents);job_cancel/reschedule 将走 /agents 面板指引"
+
 	install_skills
 	if [[ -f "${HOME}/.claude.json" ]]; then
 		"./scripts/sync-mcp.sh"

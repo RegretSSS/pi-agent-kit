@@ -10,7 +10,7 @@
 - **compact 工具**:模型在自然工作边界自主发起压缩,摘要强制携带 `<fold-index>` 索引头(单活代际链,蒸馏并集)
 - **context-gauge 水位可见性**:每 turn 首个工具结果后附加一行上下文水位(越过 75%/90% 线同行升级为压缩提示),TUI footer 常显——零缓存损失,水位史随 compact 自清理
 - **history 跨会话检索**:检索 billion-context 的压缩块摘要(侧车快照降级、预算轮廓+关键词窗口钻取、会话歧义候选拒绝)
-- **subagent-jobs 查询桥**:只读镜像 pi-subagents 定时任务 store(job_list),agent 侧可自查闹钟死活
+- **subagent-jobs 定时任务管理**:job_list(RPC 实时态/文件降级)+ job_cancel + job_reschedule——经 schedule-rpc patch(锚点注入上游事件总线,幂等可重跑)打通模型侧写通道
 - **AGENTS.md 管理节部署**:CommonMark 围栏感知的节级替换,幂等,节外用户内容原样保留
 - **codemode 选取决策树**:≥3 轮工具往返的目标编译成脚本,中间态留在脚本内只 return 结论
 - **七轮对抗性审计**:21 项确认缺陷全部修复并钉回归(含 6 次"修复引入回归"由轻量回归轮抓出),详见 `DECISIONS.md`
@@ -53,6 +53,6 @@ extensions/   pi 扩展(memory / tasks / compact-tool / history / a2a-inbox / co
 lints/        机械规则(一规则一文件,run-lints.sh 自动发现)
 scripts/      run-lints / enable-gate / sync-mcp / quick-install
 skills/       subagent-workflows 编排引导
-tests/        96 项(pytest 驱动 node 直载 TS 模块)
+tests/        100 项(pytest 驱动 node 直载 TS 模块)
 DECISIONS.md  全部选型决策与接受边界
 ```
