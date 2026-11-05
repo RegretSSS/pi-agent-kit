@@ -1,4 +1,4 @@
-import { formatJobs, listJobs, scheduleRpc, storePath, validateSchedulePatch } from "../extensions/subagent-jobs.ts";
+import { formatJobs, formatWorkflowRuns, formatWorkflowStatus, listJobs, registerWorkflowRunTools, scheduleRpc, storePath, validateSchedulePatch } from "../extensions/subagent-jobs.ts";
 
 const [scenario, payload] = process.argv.slice(2);
 const p = JSON.parse(payload || "{}");
@@ -68,6 +68,36 @@ if (scenario === "format") {
 		p.channel = "subagents:rpc:nowhere";
 	}
 	out.reply = await scheduleRpc(events, p.channel, { jobId: p.jobId ?? "j1" }, p.timeoutMs ?? 300, () => "fixed-id");
+}
+
+if (scenario === "wf-format") {
+	out.runsText = formatWorkflowRuns(p.runs ?? []);
+	out.statusText = p.detail ? formatWorkflowStatus(p.detail) : null;
+} else if (scenario === "wf-tools") {
+	const tools = new Map();
+	const pi = {
+		events: fakeEvents(),
+		registerTool: (tool) => tools.set(tool.name, tool),
+	};
+	const Type = {
+		Object: (properties) => ({ type: "object", properties }),
+		String: (description) => ({ type: "string", ...(description ? { description: description.description } : {}) }),
+		Number: (description) => ({ type: "number", ...(description ? { description: description.description } : {}) }),
+		Boolean: (description) => ({ type: "boolean", ...(description ? { description: description.description } : {}) }),
+		Optional: (schema) => schema,
+	};
+	registerWorkflowRunTools(pi, Type);
+	const upstream = p.upstream ?? {};
+	for (const [channel, behavior] of Object.entries(upstream)) {
+		pi.events.registerUpstream(channel, () => {
+			if (behavior.throw) throw new Error(behavior.throw);
+			return behavior.data;
+		});
+	}
+	const tool = tools.get(p.tool);
+	if (!tool) throw new Error(`tool not registered: ${p.tool}`);
+	const result = await tool.execute("call-1", p.params ?? {}, undefined, undefined, { cwd: "/w", sessionManager: { getSessionId: () => "sess-1" } });
+	out.result = { text: result.content?.[0]?.text ?? "", isError: result.isError === true };
 }
 
 console.log(JSON.stringify(out));

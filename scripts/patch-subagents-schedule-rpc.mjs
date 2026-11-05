@@ -78,6 +78,90 @@ const RPC_DEPS_REPLACEMENT = `  getScheduler?: () => unknown;
   manager: SpawnCapable;
 }`;
 
+const WF_DEPS_ANCHOR = RPC_DEPS_ANCHOR;
+const WF_DEPS_REPLACEMENT = `  manager: SpawnCapable;
+  getWorkflowTasks?: () => unknown;
+}`;
+
+const WF_IMPORT_ANCHOR = 'import type { AgentRecord } from "./types.js";';
+const WF_IMPORT_REPLACEMENT = [
+  WF_IMPORT_ANCHOR,
+  'import { collapse } from "./workflow/progress.js";',
+  'import { pauseWorkflowTask, resumeWorkflowTask } from "./workflow/task.js";',
+  'import type { WorkflowTask } from "./workflow/task.js";',
+].join("\n");
+
+const WF_HANDLERS_ANCHOR = '  const unsubSpawn = handleRpc<{ requestId: string; type: string; prompt: string; options?: any }>(';
+const WF_HANDLERS_LINES = [
+  '  function requireWorkflowTasks(): Map<string, WorkflowTask> {',
+  '    const tasks = deps.getWorkflowTasks?.() as Map<string, WorkflowTask> | undefined;',
+  '    if (!tasks) throw new Error("workflow registry unavailable (no session bound yet)");',
+  '    return tasks;',
+  '  }',
+  '  function noSuchRun(runId: string): never {',
+  '    throw new Error("no such workflow run: " + runId);',
+  '  }',
+  '  function findRun(runId: string): WorkflowTask {',
+  '    const task = requireWorkflowTasks().get(String(runId));',
+  '    if (!task) noSuchRun(runId);',
+  '    return task;',
+  '  }',
+  '  function runSummary(task: WorkflowTask) {',
+  '    return {',
+  '      id: task.id,',
+  '      name: task.meta?.name ?? task.workflowName ?? task.id,',
+  '      status: task.status,',
+  '      doneCount: task.doneCount,',
+  '      agentCount: task.agentCount,',
+  '      replayedCount: task.replayedCount,',
+  '      tokens: task.totalTokens,',
+  '      toolCalls: task.totalToolCalls,',
+  '      logCount: task.logs.length,',
+  '      startedAt: task.startTime,',
+  '      completedAt: task.endTime,',
+  '      pausedMs: task.totalPausedMs,',
+  '      scriptPath: task.scriptPath,',
+  '      journalPath: task.journalPath,',
+  '      ...(task.error !== undefined ? { error: task.error } : {}),',
+  '    };',
+  '  }',
+  '  const unsubWorkflowList = handleRpc(events, "subagents:rpc:workflow_list", () => {',
+  '    return { runs: [...requireWorkflowTasks().values()].map(runSummary) };',
+  '  });',
+  '  const unsubWorkflowStop = handleRpc(events, "subagents:rpc:workflow_stop", ({ runId }: { runId: string }) => {',
+  '    const task = findRun(runId);',
+  '    if (task.abortController.signal.aborted) return { stopped: false, status: task.status };',
+  '    task.abortController.abort();',
+  '    return { stopped: true };',
+  '  });',
+  '  const unsubWorkflowPause = handleRpc(events, "subagents:rpc:workflow_pause", ({ runId }: { runId: string }) => {',
+  '    const task = findRun(runId);',
+  '    if (!pauseWorkflowTask(task)) throw new Error("run " + task.id + " cannot pause now (status: " + task.status + ")");',
+  '    return { paused: true };',
+  '  });',
+  '  const unsubWorkflowResume = handleRpc(events, "subagents:rpc:workflow_resume", ({ runId }: { runId: string }) => {',
+  '    const task = findRun(runId);',
+  '    if (!resumeWorkflowTask(task)) throw new Error("run " + task.id + " cannot resume now (status: " + task.status + ")");',
+  '    return { resumed: true };',
+  '  });',
+  '  const unsubWorkflowStatus = handleRpc(events, "subagents:rpc:workflow_status", ({ runId, lines }: { runId: string; lines?: number }) => {',
+  '    const task = findRun(runId);',
+  '    const n = Math.max(1, Math.min(Number(lines) || 20, 200));',
+  '    const collapsed = collapse(task.workflowProgress);',
+  '    const agents = collapsed.agents.slice(-n).map((a) => ({',
+  '      label: a.label,',
+  '      state: a.state,',
+  '      ...(a.error !== undefined ? { error: a.error } : {}),',
+  '      ...(a.tokens !== undefined ? { tokens: a.tokens } : {}),',
+  '    }));',
+  '    return { ...runSummary(task), logs: task.logs.slice(-n), agents };',
+  '  });',
+];
+const WF_HANDLERS_REPLACEMENT = [...WF_HANDLERS_LINES, "", WF_HANDLERS_ANCHOR].join("\n");
+
+const WF_WIRING_ANCHOR = "        getScheduler: () => scheduler,";
+const WF_WIRING_REPLACEMENT = [WF_WIRING_ANCHOR, "        getWorkflowTasks: () => workflowTasks,"].join("\n");
+
 const INDEX_ANCHOR = `      rpcHandle = registerRpcHandlers({
         events: pi.events,
         pi,
@@ -109,8 +193,12 @@ function patchFile(path, anchor, replacement, marker, label) {
 
 let ok = true;
 ok = patchFile(RPC_SRC, RPC_DEPS_ANCHOR, RPC_DEPS_REPLACEMENT, "getScheduler?: () => unknown;", "rpc-deps") && ok;
+ok = patchFile(RPC_SRC, WF_DEPS_ANCHOR, WF_DEPS_REPLACEMENT, "getWorkflowTasks?: () => unknown;", "wf-deps") && ok;
 ok = patchFile(RPC_SRC, RPC_PING_ANCHOR, RPC_INJECT, "subagents:rpc:schedule_list", "rpc-handlers") && ok;
+ok = patchFile(RPC_SRC, WF_IMPORT_ANCHOR, WF_IMPORT_REPLACEMENT, 'import { pauseWorkflowTask, resumeWorkflowTask } from "./workflow/task.js";', "wf-import") && ok;
+ok = patchFile(RPC_SRC, WF_HANDLERS_ANCHOR, WF_HANDLERS_REPLACEMENT, "subagents:rpc:workflow_list", "wf-handlers") && ok;
 ok = patchFile(INDEX_SRC, INDEX_ANCHOR, INDEX_REPLACEMENT, "getScheduler: () => scheduler,", "getScheduler-dep") && ok;
+ok = patchFile(INDEX_SRC, WF_WIRING_ANCHOR, WF_WIRING_REPLACEMENT, "getWorkflowTasks: () => workflowTasks,", "wf-wiring") && ok;
 ok = patchFile(DESC_SRC, DESC_TAIL_ANCHOR, DESC_TAIL_ANCHOR + DESC_SLIM_EXPORT, "slimWorkflowToolDescription", "slim-desc") && ok;
 ok = patchFile(
 	INDEX_SRC,

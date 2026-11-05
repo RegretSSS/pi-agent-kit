@@ -120,6 +120,131 @@ export function validateSchedulePatch(patch: Record<string, unknown>): string | 
 	return null;
 }
 
+export type WorkflowRunSummary = {
+	id: string;
+	name: string;
+	status: string;
+	doneCount: number;
+	agentCount: number;
+	replayedCount: number;
+	tokens: number;
+	toolCalls: number;
+	logCount: number;
+	startedAt: number;
+	completedAt?: number;
+	pausedMs?: number;
+	scriptPath?: string;
+	journalPath?: string;
+	error?: string;
+};
+
+export type WorkflowAgentRow = { label: string; state: string; error?: string; tokens?: number };
+
+export type WorkflowStatusDetail = WorkflowRunSummary & { logs: string[]; agents: WorkflowAgentRow[] };
+
+export function formatWorkflowRuns(runs: WorkflowRunSummary[]): string {
+	if (runs.length === 0) return "本会话还没有 workflow run(一经 SubagentWorkflow 启动即在此可见,含已结束的)";
+	const rows = runs.map((run) => {
+		const ended = run.completedAt !== undefined ? `→${new Date(run.completedAt).toISOString()}` : "";
+		const err = run.error !== undefined ? ` | ${run.error}` : "";
+		return `- ${run.id} | ${run.name} | ${run.status} | agents ${run.doneCount}/${run.agentCount} | tokens ${run.tokens}${run.replayedCount > 0 ? ` | replayed ${run.replayedCount}` : ""} | ${new Date(run.startedAt).toISOString()}${ended}${err}`;
+	});
+	const tail = "管理:workflow_stop / workflow_pause / workflow_resume;killed 的 run 可用 SubagentWorkflow scriptPath + resumeFromRunId 续跑(journal 回放已完成 agent)。";
+	return [`共 ${runs.length} 个 workflow run:`, ...rows, tail].join("\n");
+}
+
+export function formatWorkflowStatus(detail: WorkflowStatusDetail): string {
+	const head = formatWorkflowRuns([detail]).split("\n")[1];
+	const paths = [detail.scriptPath ? `script: ${detail.scriptPath}` : null, detail.journalPath ? `journal: ${detail.journalPath}` : null].filter(Boolean);
+	const agents = detail.agents.length > 0 ? ["agents:", ...detail.agents.map((a) => `- ${a.label} [${a.state}]${a.tokens !== undefined ? ` tokens ${a.tokens}` : ""}${a.error !== undefined ? ` | ${a.error}` : ""}`)] : [];
+	const logs = detail.logs.length > 0 ? ["logs(tail):", ...detail.logs.map((l) => `- ${l}`)] : [];
+	return [head, ...paths, ...agents, ...logs].join("\n");
+}
+
+export function registerWorkflowRunTools(pi: ExtensionAPI, Type: typeof import("typebox").Type): void {
+	const rpcError = (action: string, error: string) => `${action}失败: ${error};RPC 不可用时检查 pi-subagents workflow-rpc patch 是否已打(重启 pi 生效)与是否有活跃会话`;
+	pi.registerTool({
+		name: "workflow_list",
+		label: "List Workflow Runs",
+		description: "列出本会话全部 workflow run(含运行中/已完成/killed):状态、agent 进度、tokens、脚本与 journal 路径。",
+		promptSnippet: "workflow run 清单查询",
+		parameters: Type.Object({}),
+		async execute(_toolCallId, _params, _signal, _onUpdate) {
+			const reply = await scheduleRpc<{ runs: WorkflowRunSummary[] }>(pi.events, "subagents:rpc:workflow_list", {});
+			if (reply.success && reply.data && Array.isArray(reply.data.runs)) {
+				return { content: [{ type: "text", text: formatWorkflowRuns(reply.data.runs) }], details: { runs: reply.data.runs } };
+			}
+			return { content: [{ type: "text", text: rpcError("workflow_list", reply.success ? "返回结构异常" : String(reply.error)) }], details: { runs: [] }, isError: true };
+		},
+	});
+	pi.registerTool({
+		name: "workflow_status",
+		label: "Workflow Run Status",
+		description: "查询单个 workflow run 的详情:每个 agent 的状态/错误/tokens 与 log() 叙述尾部。",
+		promptSnippet: "workflow run 状态详情",
+		parameters: Type.Object({
+			run_id: Type.String({ description: "workflow_list 返回的 id(wf_ 前缀)" }),
+			lines: Type.Optional(Type.Number({ description: "logs/agents 各取尾部行数,默认 20,上限 200" })),
+		}),
+		async execute(_toolCallId, params) {
+			const reply = await scheduleRpc<WorkflowStatusDetail>(pi.events, "subagents:rpc:workflow_status", { runId: params.run_id, lines: params.lines });
+			if (reply.success && reply.data && reply.data.id) {
+				return { content: [{ type: "text", text: formatWorkflowStatus(reply.data) }], details: reply.data };
+			}
+			return { content: [{ type: "text", text: rpcError("workflow_status", reply.success ? "返回结构异常" : String(reply.error)) }], details: null, isError: true };
+		},
+	});
+	pi.registerTool({
+		name: "workflow_stop",
+		label: "Stop Workflow Run",
+		description: "停止一个运行中的 workflow run(abort 其全部子 agent 与 worker;已停止的幂等返回)。停止后可用 scriptPath + resumeFromRunId 续跑。",
+		promptSnippet: "workflow run 停止",
+		parameters: Type.Object({
+			run_id: Type.String({ description: "workflow_list 返回的 id" }),
+		}),
+		async execute(_toolCallId, params) {
+			const reply = await scheduleRpc<{ stopped: boolean; status?: string }>(pi.events, "subagents:rpc:workflow_stop", { runId: params.run_id });
+			if (reply.success && reply.data) {
+				const text = reply.data.stopped ? `已停止 ${params.run_id}(子 agent 一并 abort;续跑用 SubagentWorkflow scriptPath + resumeFromRunId)` : `${params.run_id} 无需停止(已 abort,状态 ${reply.data.status ?? "unknown"})`;
+				return { content: [{ type: "text", text }], details: reply.data };
+			}
+			return { content: [{ type: "text", text: rpcError("workflow_stop", reply.success ? "返回结构异常" : String(reply.error)) }], details: null, isError: true };
+		},
+	});
+	pi.registerTool({
+		name: "workflow_pause",
+		label: "Pause Workflow Run",
+		description: "暂停一个运行中的 workflow run(暂停期间 elapsed 不计;resume 恢复)。仅 running 状态可暂停。",
+		promptSnippet: "workflow run 暂停",
+		parameters: Type.Object({
+			run_id: Type.String({ description: "workflow_list 返回的 id" }),
+		}),
+		async execute(_toolCallId, params) {
+			const reply = await scheduleRpc(pi.events, "subagents:rpc:workflow_pause", { runId: params.run_id });
+			if (reply.success) {
+				return { content: [{ type: "text", text: `已暂停 ${params.run_id}(workflow_resume 恢复)` }], details: { paused: true } };
+			}
+			return { content: [{ type: "text", text: rpcError("workflow_pause", String(reply.error)) }], details: { paused: false }, isError: true };
+		},
+	});
+	pi.registerTool({
+		name: "workflow_resume",
+		label: "Resume Workflow Run",
+		description: "恢复一个已暂停的 workflow run。仅 paused 状态可恢复。",
+		promptSnippet: "workflow run 恢复",
+		parameters: Type.Object({
+			run_id: Type.String({ description: "workflow_list 返回的 id" }),
+		}),
+		async execute(_toolCallId, params) {
+			const reply = await scheduleRpc(pi.events, "subagents:rpc:workflow_resume", { runId: params.run_id });
+			if (reply.success) {
+				return { content: [{ type: "text", text: `已恢复 ${params.run_id}` }], details: { resumed: true } };
+			}
+			return { content: [{ type: "text", text: rpcError("workflow_resume", String(reply.error)) }], details: { resumed: false }, isError: true };
+		},
+	});
+}
+
 export function registerJobTools(pi: ExtensionAPI, Type: typeof import("typebox").Type): void {
 	pi.registerTool({
 		name: "job_list",
@@ -191,4 +316,5 @@ export function registerJobTools(pi: ExtensionAPI, Type: typeof import("typebox"
 export default async function (pi: ExtensionAPI) {
 	const { Type } = await import("typebox");
 	registerJobTools(pi, Type);
+	registerWorkflowRunTools(pi, Type);
 }
