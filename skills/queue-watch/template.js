@@ -7,13 +7,14 @@ export const meta = {
 }
 
 const WATCH_LOG = "/home/remedy/.agents-mailbox/hub.log"
+const LINE_ANCHOR = "^\\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8}\\] "
 const TRIGGER_RE = "FAILED|bounce|registry-pruned"
 const OFFSET_FILE = "/home/remedy/.agents/hub-watch.offset"
 const WINDOW_LOOPS = 108
 const LOOP_SLEEP_S = 5
 const MAX_ROUNDS = 40
 
-const WATCH_BASH = `OFF=$(cat ${OFFSET_FILE} 2>/dev/null || echo 0); CUR=$(wc -l < ${WATCH_LOG}); M=$(tail -n +$((OFF+1)) ${WATCH_LOG} | grep -E '${TRIGGER_RE}' | head -3); if [ -n "$M" ]; then printf 'EXIT=0\\n%s\\nNEW_TOTAL=%s\\n' "$M" "$CUR"; exit 0; fi; echo $CUR > ${OFFSET_FILE}; for i in $(seq 1 ${WINDOW_LOOPS}); do sleep ${LOOP_SLEEP_S}; CUR=$(wc -l < ${WATCH_LOG}); M=$(tail -n +$((OFF+1)) ${WATCH_LOG} | grep -E '${TRIGGER_RE}' | head -3); if [ -n "$M" ]; then printf 'EXIT=0\\n%s\\nNEW_TOTAL=%s\\n' "$M" "$CUR"; exit 0; fi; echo $CUR > ${OFFSET_FILE}; done; printf 'EXIT=42\\nNEW_TOTAL=%s\\n' "$CUR"; exit 0`
+const WATCH_BASH = `OFF=$(cat ${OFFSET_FILE} 2>/dev/null || wc -l < ${WATCH_LOG}); CUR=$(wc -l < ${WATCH_LOG}); M=$(tail -n +$((OFF+1)) ${WATCH_LOG} | grep -E '${LINE_ANCHOR}(${TRIGGER_RE})' | head -3); if [ -n "$M" ]; then printf 'EXIT=0\\n%s\\nNEW_TOTAL=%s\\n' "$M" "$CUR"; exit 0; fi; echo $CUR > ${OFFSET_FILE}; for i in $(seq 1 ${WINDOW_LOOPS}); do sleep ${LOOP_SLEEP_S}; CUR=$(wc -l < ${WATCH_LOG}); M=$(tail -n +$((OFF+1)) ${WATCH_LOG} | grep -E '${LINE_ANCHOR}(${TRIGGER_RE})' | head -3); if [ -n "$M" ]; then printf 'EXIT=0\\n%s\\nNEW_TOTAL=%s\\n' "$M" "$CUR"; exit 0; fi; echo $CUR > ${OFFSET_FILE}; done; printf 'EXIT=42\\nNEW_TOTAL=%s\\n' "$CUR"; exit 0`
 
 const WATCH_PROMPT = [
   `跑下面这条 bash 命令,把 stdout 原样完整返回,一行都不要改写、摘要或省略。`,

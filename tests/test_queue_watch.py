@@ -23,7 +23,8 @@ def run_window(tmp: Path, log_lines: list[str], offset: str | None, loops: str =
         extract_watch_bash()
         .replace("${OFFSET_FILE}", str(offset_file))
         .replace("${WATCH_LOG}", str(log))
-        .replace("'${TRIGGER_RE}'", "'FAILED|bounce|registry-pruned'")
+        .replace("${LINE_ANCHOR}", r"^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8}\] ")
+        .replace("${TRIGGER_RE}", "FAILED|bounce|registry-pruned")
         .replace("${WINDOW_LOOPS}", loops)
         .replace("${LOOP_SLEEP_S}", sleep)
         .replace("\\n", "\n")
@@ -34,7 +35,7 @@ def run_window(tmp: Path, log_lines: list[str], offset: str | None, loops: str =
 def test_window_hits_and_keeps_offset(tmp_path) -> None:
     result = run_window(
         tmp_path,
-        ["[ok] normal line", "[x] bounce abc123 reason=test", "[ok] another"],
+        ["[ok] normal line", "[2026-11-05 21:00:00] bounce abc123 reason=test", "[ok] another"],
         offset="0",
     )
     assert result.returncode == 0
@@ -42,11 +43,33 @@ def test_window_hits_and_keeps_offset(tmp_path) -> None:
     assert "EXIT=0" in out
     assert "bounce abc123" in out
     assert "NEW_TOTAL=3" in out
-    assert tmp_path.joinpath("watch.offset").read_text().strip() == "0" or not tmp_path.joinpath("watch.offset").exists() or tmp_path.joinpath("watch.offset").read_text().strip() == "0"
+    assert tmp_path.joinpath("watch.offset").read_text().strip() == "0"
+
+
+def test_window_ignores_unanchored_trigger_words(tmp_path) -> None:
+    result = run_window(
+        tmp_path,
+        ["[ok] someone said bounce in prose", "[2026-11-05 21:00:00] fine here"],
+        offset="0",
+    )
+    assert result.returncode == 0
+    assert "EXIT=42" in result.stdout
+
+
+def test_window_cold_start_anchors_to_tail(tmp_path) -> None:
+    result = run_window(
+        tmp_path,
+        ["[2026-11-04 09:00:00] registry-pruned old-history", "[2026-11-05 21:00:00] quiet"],
+        offset=None,
+    )
+    assert result.returncode == 0
+    assert "EXIT=42" in result.stdout
+    assert "old-history" not in result.stdout
+    assert tmp_path.joinpath("watch.offset").read_text().strip() == "2"
 
 
 def test_window_quiet_advances_offset(tmp_path) -> None:
-    result = run_window(tmp_path, ["[ok] only quiet lines", "[ok] nothing here"], offset="0")
+    result = run_window(tmp_path, ["[2026-11-05 21:00:00] only quiet lines", "[2026-11-05 21:00:01] nothing here"], offset="0")
     assert result.returncode == 0
     assert "EXIT=42" in result.stdout
     assert "NEW_TOTAL=2" in result.stdout
@@ -54,7 +77,7 @@ def test_window_quiet_advances_offset(tmp_path) -> None:
 
 
 def test_window_scans_only_after_offset(tmp_path) -> None:
-    result = run_window(tmp_path, ["[old] bounce already-handled", "[ok] fresh"], offset="1")
+    result = run_window(tmp_path, ["[2026-11-05 20:00:00] bounce already-handled", "[ok] fresh"], offset="1")
     assert result.returncode == 0
     assert "EXIT=42" in result.stdout
     assert "already-handled" not in result.stdout
