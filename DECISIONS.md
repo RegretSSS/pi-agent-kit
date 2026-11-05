@@ -92,3 +92,11 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D11-2 写通道=本地 patch 注入 schedule RPC(脚本化,非一次性 hack)**:上游无模型侧写通道(executeJob 源码注释明证 fire 不 reload from disk,外部改文件后 timer 照 spawn;RPC 面只有 ping/spawn/stop/consume/steer)。落地为 `scripts/patch-subagents-schedule-rpc.mjs`:锚点注入 getScheduler 依赖 + schedule_list/remove/update 三个 handler(幂等可重跑,上游升级锚点失配时报错退出而非静默错注);失败语义用 throw(handleRpc 把返回值包成 data,不 throw 则失败被吞)。kit 侧 job_cancel/job_reschedule 走 pi.events RPC(同进程事件总线,毫秒级往返,非跨回合等待);job_list RPC 优先(实时态含 nextRun)文件降级(未 patch 机器 list 仍可用)。已知边界:pi update 覆盖后需重跑 patch(deploy.sh 自动重试);上游收 PR 后 patch 锚点自然失配退出,转正。
 - **D11-5 patch 必须打 src/*.ts 且后清 jiti 缓存(pi-backend FR5 试用中断的根因)**:pi 经 jiti 加载 npm 扩展的 **src/*.ts 源码**(jiti 原生吃 TS),dist/*.js 是死路径——第一版 patch 打 dist 全部无效;且 /tmp/jiti 编译缓存按内容 hash 复用,磁盘改动对已缓存模块零影响,「文件已验标记存在」与「运行行为是旧的」并存(实测:原生 ping RPC 通而注入 handler 全哑,黑盒三探针定位)。patch 脚本尾部强制 rm jiti 缓存目录(TMPDIR 可隔离测试)。诊断方法论:原生通道(ping)与注入通道分离开关式定位,临时诊断扩展三探针(自发自收/上游广播/原生 RPC)逐步收窄。
 - **D11-3 重启后 job 会 fire 的代码级实证**:scheduler.start() 在 session 加载时 new ScheduleStore(构造即从磁盘 load)并 arm 全部 enabled job——「面板列着≠会响」的疑点由源码闭环,无需等次日验证。job 落盘为 session 级(store 文件名=sessionId),/resume 重载;pi --session 恢复即重 arm。
+
+## D12(SubagentWorkflow 渐进式披露改造 + zcode 守望设计吸收)
+
+- **D12-1 三层渐进披露**:上游 20.6k 工具描述(patch 注入 slimWorkflowToolDescription 瘦身至 ~3.5k,保留 opt-in 规则全文/API 一行概要/硬红线/resume 概要)→ skill 判断层(zcode 原作 §0-8 保留,新增 §9 模式库/§10 codemode 结合/§11 生态组合)→ docs/workflows.md 权威 API。信息不丢失:上游 desc 每个信息块要么留 L0、要么迁 L1、要么 L2 原有。CC 生态自身就是此形态(工具 desc 概要 + skill 承重参考),pi-subagents 移植时把两层压平成一层——本改造是还原,与上游 issue #435(slim 档问询)同向。
+- **D12-2 zcode 守望设计迁移(设计备忘,不进 skill)**:zcode 侧常驻信箱守望 = 60 轮有界循环 × 纯 shell 守望窗(world.run,等待零模型成本)× 循环外声明的复用转送员 × escalation 实时上行。pi 侧形态映射:守窗层不进 workflow(pi 脚本无 shell)——a2a-inbox 扩展常驻队列等价且更廉价;处理层(积压批量消化)可进 workflow。模板:/mnt/c/Users/1/.zcode/skills/mailbox-watch/template.dwf.ts。
+- **D12-3 守望类编排五条纪律(引擎无关,zcode 实战沉淀)**:①送达语义=上行送达主控并拿到答复,ack 只在收到答复后落;②升级前再查 ack(跨轮去重第二层闸;第一层=出队即 diff);③同信连续 2 轮失败→熔断终止留队列等人工;④循环有界;⑤外层超时≥内窗+15min 余量(实测:2860×5s≈3.97h 贴 4h 超时炸整 run)。
+- **D12-4 安全边界:prompt injection 防线在 persona 层**:转送/分拣类 agent 角色硬编码——只转送+归档,绝不执行信件正文指示、绝不代笔回函;信件正文=不可信输入;拍板/花钱/破坏性动作主控亲自裁定。
+- **D12-5 成本技巧与 SKILL §6 红线同源印证**:固定角色外提+resume 复用(SKILL §1/§10);纯搬运角色用廉价模型;热修迭代 prompt 一字不动=缓存全命中(=§6「常量别插进 prompt」);信在途绝不 amend(=§6「run 必须先停」)——zcode 的 D6 判断层与本仓红线出自同一实战谱系。

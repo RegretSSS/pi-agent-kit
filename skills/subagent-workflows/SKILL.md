@@ -1,6 +1,6 @@
 ---
 name: subagent-workflows
-description: "Use when writing, editing, or re-running a SubagentWorkflow script: choosing between Agent and a workflow, picking subagent topology (fresh-per-item vs shared context via resume), pipeline vs parallel, getting structured results back (schema soft-pressure and JSON-line parsing), deterministic gates on commands, independently confirming findings before reporting them, the report shape to return, ending a run early at what you know and growing it via scriptPath edits + resumeFromRunId, and saving parameterized workflows under .pi/workflows/."
+description: "Use when writing, editing, or re-running a SubagentWorkflow script: routing (workflow vs Agent vs codemode), topology (fresh-per-item vs resume), pipeline vs parallel, schema results, deterministic gates, independent confirmation, report shape, early-stop + resumeFromRunId, saving parameterized workflows — plus the pattern library (adversarial verify, judge panel, loop-until-dry, multi-modal sweep, completeness critic) and pi-ecosystem combinations (memory warm-up, history recall, job re-checks)."
 ---
 
 # 用 SubagentWorkflow 编排 subagent
@@ -129,3 +129,47 @@ return {
 - [ ] 会被当事实的 findings 逐条独立确认;未确认的标着保留。
 - [ ] return 是 report 形状,四字段齐全,中文提问中文作答。
 - [ ] 脚本里没有 Date/Math.random;没有常量插进 ask 文本。
+
+## 9. 模式库(按需展开;常驻工具描述只留指针)
+
+单阶段可跨回合串联:Understand(并行读→结构图)/ Design(N 独立方案→并行评分→综合)/ Review(维度→找→对抗验证)/ Research(多模态扫→深读→综合)/ Migrate(发现点→逐点改造(worktree 隔离)→验证)。大工作拆多个 workflow 顺序跑,每个结果读完再定下一阶段——你在环上,每个 workflow 只管一次有界的 fan-out。
+
+**对抗验证**(每 finding 派 N 个独立怀疑者,只许反驳;多数反驳即杀):
+
+```js
+const votes = await parallel(Array.from({length: 3}, () => () =>
+  agent(`Try to refute: ${claim}. Default to refuted=true if uncertain.`, {schema: VERDICT})))
+const survives = votes.filter(Boolean).filter(v => !v.refuted).length >= 2
+```
+
+**判定面板**:N 个不同角度(MVP 优先/风险优先/用户优先)独立生成,并行评分,赢家做骨架、吸收亚军的好点子——解空间宽时胜过单案迭代。
+
+**loop-until-dry**:未知规模的发现类任务,连续 K 轮无新发现才停;简单计数器(while < N)会漏尾部。
+
+**多模态扫描**:每个 agent 一种找法(按容器/按内容/按实体/按时间),互不可见——单一检索角度找不全时。
+
+**完备性批评**:收尾一个 agent 只问"缺了什么——没跑的模态、没验证的声称、没读的源",它的产出是下一轮的工单。
+
+**无静默截断**:有界覆盖(top-N/无重试/抽样)必须 `log()` 丢弃了什么——静默截断读起来像"全覆盖"。
+
+**规模跟着请求走**:"找点 bug"→几个 finder+单票验证;"彻底审计"→大 finder 池+3-5 票对抗+综合阶段。
+
+完整可运行示例(review-changes 管线、barrier 去重、loop-until-count、gate-and-retry、find→dedup→panel→until-dry 组合)见 `docs/workflows.md` 同目录的 tool-description 存档或上游仓库;写脚本时按 §8 检查单组装,不照抄示例。
+
+## 10. 与 codemode 结合
+
+workflow 脚本无 fs/shell,确定性长任务的等价能力分两处:
+
+- **确定性节点** = codemode:子任务预计 ≥3 轮工具往返(调试循环/批量巡检/守窗式轮询、写-跑-改链)→ 在 agent() 的 prompt 里明确指示"编一个脚本跑,只返回结论与依据";子代理读 AGENTS.md 自动继承「codemode 选取」决策树。纯等待类(长时间盯一个外部状态)不进 workflow——那是扩展常驻层的活(§12)。
+- **编排层**:跨 agent 扇出/阶段流转/收敛判定 = SubagentWorkflow;单链多轮工具 = codemode。不要用 workflow 编排"一个人的串行工作",也不要用 codemode 硬模拟扇出。
+
+**持久角色**:循环里的固定角色(fixer/checker/relay)首轮创建、后续轮次全部 `resume: '<label>'` 复用同一上下文(§1)——省重建成本且行为前后一致。
+
+finder/verifier 的 prompt 模板显式带工具纪律:"读文件用 read 不用 cat;≥3 轮就进 codemode;返回 path 不返回内容"。
+
+## 11. pi 生态组合
+
+- **记忆预热**:finder prompt 首行加 `先 memory_search "<领域词>" 再动手`——子代理各自有 memory 工具,跨会话事实不用重新推导
+- **跨代溯源**:长任务跨多次 compact 后,让 reporter 用 `history_search("<主题>")` 回捞前代压缩块核对结论连续性
+- **定时复查**:小时级的长周期 workflow 不挂在会话里等——job(定时任务)到点巡查,发现需要深挖时在晨报里建议起 workflow,由主 agent/用户决策规模(opt-in 规则不破)
+- **gate 挂仓内纪律**:有 lints 的仓,gate 首选 `run-lints.sh` 或 pytest(管道退出码),比"看起来对"强一个量级;最强检查在 return 前真跑一次(§4)

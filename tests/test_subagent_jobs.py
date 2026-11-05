@@ -98,14 +98,18 @@ def make_fake_upstream(home: Path) -> None:
         "}\n"
         '  const unsubPing = handleRpc(events, "subagents:rpc:ping", () => {\n'
         "    return { version: PROTOCOL_VERSION };\n"
-        "  });\n",
+        "  });\n"
+        "export const fullWorkflowToolDescription = `placeholder`;\n"
+        "// tail\n"
+        "stamp results after the workflow returns, or pass timestamps via args.`;\n",
         encoding="utf8",
     )
     (src_dir / "index.ts").write_text(
         "      rpcHandle = registerRpcHandlers({\n"
         "        events: pi.events,\n"
         "        pi,\n"
-        "        getCtx: () => currentCtx,\n",
+        "        getCtx: () => currentCtx,\n"
+        "description: renderToolDescriptionTemplate(fullWorkflowToolDescription),\n",
         encoding="utf8",
     )
 
@@ -126,17 +130,21 @@ def test_patch_script_idempotent_and_anchored(tmp_path) -> None:
     make_fake_upstream(home)
     first = run_patch(home, tmp)
     assert first.returncode == 0, first.stderr
-    assert first.stdout.count("注入完成") == 3
+    assert first.stdout.count("注入完成") == 5
     rpc_text = (home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/src/cross-extension-rpc.ts").read_text()
     assert "subagents:rpc:schedule_list" in rpc_text
     assert "requireScheduler" in rpc_text
     assert "getScheduler?: () => unknown;" in rpc_text
     index_text = (home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/src/index.ts").read_text()
     assert "getScheduler: () => scheduler," in index_text
+    rpc_text2 = (home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/src/cross-extension-rpc.ts").read_text()
+    assert "slimWorkflowToolDescription" in rpc_text2
+    assert "read the skill `subagent-workflows`" in rpc_text2
+    assert "renderToolDescriptionTemplate(slimWorkflowToolDescription)," in index_text
     assert not (tmp / "jiti").exists()
     second = run_patch(home, tmp)
     assert second.returncode == 0
-    assert second.stdout.count("已打过") == 3
+    assert second.stdout.count("已打过") == 5
     assert "已清理 jiti" in second.stdout
 
 
