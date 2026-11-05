@@ -80,8 +80,14 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 
 ## D10(context-gauge 水位可见性,FR4)
 
-- **D10-1 水位=常态可见的仪表盘而非越线告警**:每回合第一个工具结果后附加一行短水位(正常档仅 `[ctx 62% 124k/200k]`),75%/90% 档同行升级为行动信号文案——仪表盘与哨兵合一为单机制。理由:模型自主择时压缩(compact 哲学)的最佳边界常在 50~70%,越线才告警已过最佳时机;自查工具被否决(自动可见后主动查询需求趋零,且 /reload 不刷新会话内工具 schema)。
+- **D10-1 水位=常态可见的仪表盘而非越线告警**:每 turn(每次 LLM 循环)第一个工具结果后附加一行短水位(正常档仅 `[ctx 62% 124k/200k]`),75%/90% 档同行升级为行动信号文案——仪表盘与哨兵合一为单机制。理由:模型自主择时压缩(compact 哲学)的最佳边界常在 50~70%,越线才告警已过最佳时机;自查工具被否决(自动可见后主动查询需求趋零,且 /reload 不刷新会话内工具 schema)。
 - **D10-2 附加通道=tool_result 事件改写(零缓存损失、零额外条目)**:改写发生在工具结果入上下文之前,持久化的即改写后版本,下请求直接命中缓存;水位行随工具结果同生命周期,compact 折叠时一并被压——累积自限于单个压缩周期。排除的形态:水位值进 system prompt 尾节(pi-ai 断点在最后一条 user/system 消息,system 是头部块,任何变化打碎全部缓存前缀);followUp 注入(纯追加,可行但产生独立对话条目且常态注入会累积);context_edit 滚动替换(每回合编辑中部条目打碎上一回合后缀缓存)。
-- **D10-3 附加节流**:turn_start 重置,仅本回合首个非错误工具结果附加(并行批不重复);isError 结果跳过(错误输出保持干净,水位不应被误读为错误的一部分);getContextUsage().tokens 为 null(压缩后未获响应)不附加。structuredContent 改写 content 时原样回传(否则被丢弃)。TUI 场景 footer setStatus 常显精确水位,零上下文成本。
+- **D10-3 附加节流**:turn_start 重置,仅本 turn 首个非错误工具结果附加(pi 的 turn=单次 LLM 调用循环,串行工具链下每个工具结果各处一个 turn 故都附加——每 LLM 决策点看到最新水位,粒度即决策粒度,实测后由验收修正措辞)(并行批不重复);isError 结果跳过(错误输出保持干净,水位不应被误读为错误的一部分);getContextUsage().tokens 为 null(压缩后未获响应)不附加。structuredContent 改写 content 时原样回传(否则被丢弃)。TUI 场景 footer setStatus 常显精确水位,零上下文成本。
 - **D10-4 bili 压缩基线不入水位行**:blocks 表 session_id 与 pi 会话无映射,全局 active 块合计对当前会话决策是误导;水位行只给 pi 侧三件套(百分比/占用/窗口)。
 - **D10-5 /reload 刷新事件处理器但不刷新会话内工具 schema**(pi-backend 实测):a2a-inbox triggerTurn 行为 reload 即生效 vs memory_save 新参数 reload 后仍为旧 4 参数冻结。交付回执必须注明生效条件(事件侧=reload,工具侧=会话重启)。
+
+## D11(subagent-jobs 定时任务查询桥,FR5 收窄后)
+
+- **D11-1 job 只读镜像而非管理面**:job_list 直读 `<cwd>/.pi/subagent-schedules/<sessionId>.json`(pi-subagents ScheduleStore 落盘,PID 锁+原子写,读侧天然一致);factory 只注册工具、listJobs 独立成不依赖 typebox 的函数(D3-7 拆分模式,driver 裸 node 可测)。
+- **D11-2 外部写 store 不做 cancel**:上游 executeJob 源码注释明证——fire 时「does not reload from disk」,timer 与内存 cache 均不看文件,「a file deleted directly from a shell」不被感知,外部删除后 job 照 spawn;改动必须走 /agents 或 Agent 调用。cancel/reschedule 缺口属上游(RPC 面只有 ping/spawn/stop/consume/steer,无 schedule 方法),kit 不做 hack(本地 patch 会被 pi update 覆盖且不可迁移);建议上游 PR 补 subagents:rpc:schedule_list/remove,kit 可代起草。
+- **D11-3 重启后 job 会 fire 的代码级实证**:scheduler.start() 在 session 加载时 new ScheduleStore(构造即从磁盘 load)并 arm 全部 enabled job——「面板列着≠会响」的疑点由源码闭环,无需等次日验证。job 落盘为 session 级(store 文件名=sessionId),/resume 重载;pi --session 恢复即重 arm。
