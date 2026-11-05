@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+msg="$(cat "$1")"
+if grep -qiE 'co-authored-by:[^<]*claude|<noreply@anthropic\.com>|generated with \[claude code\]' <<<"${msg}"; then
+	echo "commit-msg: 禁止 AI 署名(Co-Authored-By: Claude / anthropropic 自动签名),去掉后重试" >&2
+	exit 1
+fi
