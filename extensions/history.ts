@@ -8,6 +8,7 @@ const PREVIEW_RADIUS = 120;
 const PREVIEW_FALLBACK = 160;
 const WINDOW_RADIUS = 500;
 const OUTLINE_BUDGET = 4000;
+const OUTLINE_SLACK = 140;
 const READ_BUDGET = 8000;
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 10;
@@ -62,20 +63,23 @@ export function bigrams(term: string): string[] {
 	return out;
 }
 
-export function scoreRow(row: BlockRow, terms: string[]): ScoredBlock | null {
+export function rowHaystack(row: BlockRow): string {
+	return (row.topic + "\n" + row.summary).toLowerCase();
+}
+
+export function scoreRow(row: BlockRow, terms: string[], hay = rowHaystack(row)): ScoredBlock | null {
 	if (terms.length === 0) return null;
-	const haystack = (row.topic + "\n" + row.summary).toLowerCase();
 	const hitTerms: string[] = [];
 	let score = 0;
 	for (const term of terms) {
-		if (haystack.includes(term)) {
+		if (hay.includes(term)) {
 			hitTerms.push(term);
 			score += 1;
 			continue;
 		}
 		if (term.length >= 4 && CJK.test(term)) {
 			const grams = bigrams(term);
-			const hit = grams.filter((g) => haystack.includes(g)).length;
+			const hit = grams.filter((g) => hay.includes(g)).length;
 			if (grams.length > 0 && hit / grams.length >= 0.5) {
 				hitTerms.push(term);
 				score += 0.5;
@@ -83,7 +87,8 @@ export function scoreRow(row: BlockRow, terms: string[]): ScoredBlock | null {
 		}
 	}
 	if (hitTerms.length === 0) return null;
-	if (row.topic.toLowerCase().includes(hitTerms[0])) score += 0.5;
+	const topicLower = row.topic.toLowerCase();
+	if (hitTerms.some((t) => topicLower.includes(t))) score += 0.5;
 	return { row, score, hitTerms };
 }
 
@@ -128,7 +133,7 @@ export function formatOutline(hits: ScoredBlock[], budget: number): { text: stri
 		const inSummary = hit.hitTerms.find((t) => row.summary.toLowerCase().includes(t));
 		const preview = "  " + (inSummary ? windowAround(row.summary, inSummary, PREVIEW_RADIUS) : row.summary.slice(0, PREVIEW_FALLBACK));
 		const block = head + "\n" + preview;
-		if (used + block.length + 60 > budget) {
+		if (used + block.length + OUTLINE_SLACK > budget) {
 			truncated = hits.length - shown;
 			break;
 		}
@@ -145,8 +150,11 @@ export class HistoryIndex {
 	private readonly dbPath: string;
 	private readonly sidecarDir: string;
 	private signature = "";
+	private lastPayload = "";
 	private rows: BlockRow[] | null = null;
 	private available = false;
+	private origin: "db" | "sidecar" = "sidecar";
+	private readonly hayCache = new Map<string, string>();
 
 	constructor(dbPath = defaultDbPath(), sidecarDir = defaultSidecarDir()) {
 		this.dbPath = dbPath;
@@ -159,6 +167,20 @@ export class HistoryIndex {
 
 	isAvailable(): boolean {
 		return this.available;
+	}
+
+	source(): "db" | "sidecar" {
+		return this.origin;
+	}
+
+	private hay(row: BlockRow): string {
+		const key = `${row.session}/${row.blockId}`;
+		let value = this.hayCache.get(key);
+		if (value === undefined) {
+			value = rowHaystack(row);
+			this.hayCache.set(key, value);
+		}
+		return value;
 	}
 
 	private async loadSidecar(): Promise<BlockRow[]> {
@@ -195,9 +217,14 @@ export class HistoryIndex {
 		await rename(tmp, this.sidecarPath());
 	}
 
-	private readBlocks(): BlockRow[] {
+	private openDb(): DatabaseSync {
 		const db = new DatabaseSync(this.dbPath);
 		db.exec("PRAGMA busy_timeout = 3000");
+		return db;
+	}
+
+	private readBlocks(): BlockRow[] {
+		const db = this.openDb();
 		const out: BlockRow[] = [];
 		try {
 			const rows = db.prepare("SELECT session_id, block_id, ord, tier, active, start_seq, end_seq, payload_json FROM blocks ORDER BY session_id, ord").all() as Array<Record<string, unknown>>;
@@ -241,6 +268,17 @@ export class HistoryIndex {
 				if (p === this.dbPath) return null;
 			}
 		}
+		try {
+			const db = this.openDb();
+			try {
+				const counted = db.prepare("SELECT COUNT(*) AS n FROM blocks").get() as { n: number };
+				parts.push(`rows:${counted.n}`);
+			} finally {
+				db.close();
+			}
+		} catch {
+			return null;
+		}
 		return parts.join("|");
 	}
 
@@ -250,10 +288,20 @@ export class HistoryIndex {
 		if (signature === this.signature && this.rows !== null) return true;
 		try {
 			const rows = this.readBlocks();
-			await this.persistSidecar(rows);
 			this.rows = rows;
 			this.signature = signature;
 			this.available = true;
+			this.origin = "db";
+			this.hayCache.clear();
+			const payload = rows.map((r) => JSON.stringify(r)).join("\n");
+			if (payload !== this.lastPayload) {
+				try {
+					await this.persistSidecar(rows);
+					this.lastPayload = payload;
+				} catch (err) {
+					console.error(`history sidecar persist failed (serving fresh db data): ${err instanceof Error ? err.message : String(err)}`);
+				}
+			}
 			return true;
 		} catch {
 			return this.fallback();
@@ -273,6 +321,8 @@ export class HistoryIndex {
 			}
 			this.rows = rows;
 			this.available = true;
+			this.origin = "sidecar";
+			this.hayCache.clear();
 			return true;
 		} catch {
 			this.available = false;
@@ -283,14 +333,16 @@ export class HistoryIndex {
 	async search(query: string, session?: string, limit = DEFAULT_LIMIT): Promise<ScoredBlock[]> {
 		if (!(await this.refresh()) || this.rows === null) return [];
 		const terms = splitTerms(query);
-		const pool = session && session.length > 0 ? this.rows.filter((r) => r.session === session || r.session.startsWith(session)) : this.rows;
-		return pool.map((r) => scoreRow(r, terms)).filter((s): s is ScoredBlock => s !== null).sort((a, b) => b.score - a.score).slice(0, Math.max(1, Math.min(limit, MAX_LIMIT)));
+		const scope = session?.trim();
+		const pool = scope && scope.length > 0 ? this.rows.filter((r) => r.session === scope || r.session.startsWith(scope)) : this.rows;
+		return pool.map((r) => scoreRow(r, terms, this.hay(r))).filter((s): s is ScoredBlock => s !== null).sort((a, b) => b.score - a.score).slice(0, Math.max(1, Math.min(limit, MAX_LIMIT)));
 	}
 
 	async readBlock(session: string, block: string, around?: string): Promise<ReadOutcome> {
 		if (!(await this.refresh()) || this.rows === null) return { status: "unavailable" };
-		if (typeof session !== "string" || session.trim().length < 4) return { status: "invalid-session" };
-		const matches = this.rows.filter((r) => (r.session === session || r.session.startsWith(session)) && r.blockId === block);
+		const scope = (session ?? "").trim();
+		if (scope.length < 4) return { status: "invalid-session" };
+		const matches = this.rows.filter((r) => (r.session === scope || r.session.startsWith(scope)) && r.blockId === block);
 		if (matches.length === 0) return { status: "missing" };
 		const sessions = [...new Set(matches.map((m) => m.session))];
 		if (sessions.length > 1) {
@@ -327,21 +379,22 @@ export function buildTools(Type: TypeBoxLike, index: HistoryIndex) {
 			limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_LIMIT })),
 		}),
 		async execute(_toolCallId: string, params: { query: string; session?: string; limit?: number }) {
-			if (!(await index.refresh())) {
+			const hits = await index.search(params.query, params.session, params.limit ?? DEFAULT_LIMIT);
+			if (!index.isAvailable()) {
 				return {
 					content: [{ type: "text", text: "history index unavailable: billion-context database not found and no sidecar snapshot exists. Fallback: grep ~/.pi/agent/sessions/*/<session>.jsonl" }],
 					details: { available: false, hits: [] },
 				};
 			}
-			const hits = await index.search(params.query, params.session, params.limit ?? DEFAULT_LIMIT);
 			if (hits.length === 0) {
-				return { content: [{ type: "text", text: "无命中。换更短的关键词,或用 history_read 直接读已知块。" }], details: { available: true, hits: [] } };
+				return { content: [{ type: "text", text: "无命中。换更短的关键词,或用 history_read 直接读已知块。" }], details: { available: true, source: index.source(), hits: [] } };
 			}
 			const outline = formatOutline(hits, OUTLINE_BUDGET);
 			return {
 				content: [{ type: "text", text: `${hits.length} block(s) match:\n${outline.text}` }],
 				details: {
 					available: true,
+					source: index.source(),
 					truncated: outline.truncated,
 					hits: hits.map((h) => ({ session: h.row.session, block: h.row.blockId, active: h.row.active, topic: h.row.topic.slice(0, TOPIC_BUDGET), score: h.score, hitTerms: h.hitTerms })),
 				},
@@ -372,7 +425,7 @@ export function buildTools(Type: TypeBoxLike, index: HistoryIndex) {
 				const list = outcome.candidates.map((c) => `- ${c.session} · ${c.topic.slice(0, TOPIC_BUDGET)}`).join("\n");
 				return { content: [{ type: "text", text: `会话前缀歧义,该 blockId 命中多个会话,请用完整 id 重试:\n${list}` }], details: { status: outcome.status, candidates: outcome.candidates }, isError: true };
 			}
-			return { content: [{ type: "text", text: outcome.text }], details: { status: "ok", session: outcome.row.session, block: outcome.row.blockId, active: outcome.row.active } };
+			return { content: [{ type: "text", text: outcome.text }], details: { status: "ok", source: index.source(), session: outcome.row.session, block: outcome.row.blockId, active: outcome.row.active } };
 		},
 	};
 	return [searchTool, readTool];

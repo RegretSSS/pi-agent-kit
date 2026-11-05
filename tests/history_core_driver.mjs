@@ -95,8 +95,21 @@ switch (scenario) {
 		const [tool] = buildTools(fakeType, idx);
 		const r = await tool.execute("t1", { query, limit });
 		out.textHead = r.content[0].text.slice(0, 120);
+		out.source = r.details.source ?? null;
 		out.hits = (r.details.hits ?? []).map((h) => ({ session: h.session, topicLen: (h.topic ?? "").length, active: h.active }));
 		out.truncated = r.details.truncated ?? null;
+		break;
+	}
+	case "persist-fail": {
+		seedDb();
+		const { writeFile } = await import("node:fs/promises");
+		const blocked = `${root}/blocked-dir`;
+		await writeFile(blocked, "occupied");
+		const idx = new HistoryIndex(dbPath, blocked);
+		out.refreshed = await idx.refresh();
+		out.available = idx.isAvailable();
+		out.source = idx.source();
+		out.hits = (await idx.search("民法典")).map((h) => h.row.blockId);
 		break;
 	}
 	case "execute-read": {
@@ -137,6 +150,7 @@ switch (scenario) {
 		const idx = new HistoryIndex(dbPath, sidecarDir);
 		out.refreshed = await idx.refresh();
 		out.available = idx.isAvailable();
+		out.source = idx.source();
 		out.hits = (await idx.search("民法典")).map((h) => h.row.blockId);
 		break;
 	}

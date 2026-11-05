@@ -97,3 +97,64 @@ def test_duplicate_managed_heading_all_refreshed() -> None:
         assert "旧二" not in text
         assert "保留我" in text
         assert text.count("## 问题即 lint") == 2
+
+
+def test_tilde_fence_not_hijacked() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        target = home / ".agents" / "AGENTS.md"
+        target.parent.mkdir(parents=True)
+        target.write_text(
+            "# AGENTS.md\n\n## 部署日志\n\n~~~\n## 问题即 lint\n这里是用户贴的示例正文,不该被动\n~~~\n\n尾随私有行。\n\n## 问题即 lint\n\n旧内容\n"
+        )
+        run_deploy(home)
+        text = target.read_text()
+        assert "这里是用户贴的示例正文,不该被动" in text
+        assert "尾随私有行。" in text
+        assert "旧内容" not in text
+        assert outside_heading_count(text, "## 问题即 lint") == 1
+
+
+def outside_heading_count(text: str, heading: str) -> int:
+    fence = None
+    count = 0
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        if fence is None:
+            if stripped.startswith("```") or stripped.startswith("~~~"):
+                fence = stripped[:3]
+                continue
+        elif stripped.startswith(fence):
+            fence = None
+            continue
+        if fence is None and line == heading:
+            count += 1
+    return count
+
+
+def test_unterminated_fence_closed_before_append() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        target = home / ".agents" / "AGENTS.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("# AGENTS.md\n\n```\n未闭合围栏里的内容\n")
+        run_deploy(home)
+        text = target.read_text()
+        assert "未闭合围栏里的内容" in text
+        lines = text.split("\n")
+        content_at = lines.index("未闭合围栏里的内容")
+        assert "```" in lines[content_at + 1 : content_at + 3]
+        run_deploy(home)
+        assert target.read_text() == text
+
+
+def test_library_module_not_deployed_as_extension() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        result = run_deploy(home)
+        deployed = (home / ".pi" / "agent" / "extensions").glob("*.ts")
+        names = {p.name for p in deployed}
+        assert "compact-instructions.ts" not in names
+        assert "history.ts" in names
+        assert "compact-tool.ts" in names
+        assert "library module" not in result

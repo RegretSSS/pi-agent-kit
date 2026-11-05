@@ -57,7 +57,8 @@ def test_read_block_full_window_and_guard(tmp_path) -> None:
     assert full["status"] == "ok"
     assert "整理" in full["text"]
     window = drive(tmp_path, "read", {"session": "01a1a94b", "block": "b2", "around": "A10"})
-    assert "A10" in window["text"] or window["status"] == "ok"
+    assert window["status"] == "ok"
+    assert "A10" in window["text"]
     missing = drive(tmp_path, "read", {"session": "01a1a94b", "block": "b99"})
     assert missing["status"] == "missing"
 
@@ -135,3 +136,24 @@ def test_compact_instructions_fold_index(tmp_path) -> None:
     without = drive(tmp_path, "instructions", {"brief": "keep task state", "historyActive": False})
     assert "history_search" not in without["text"]
     assert "<fold-index>" in without["text"]
+
+
+def test_execute_search_reports_source(tmp_path) -> None:
+    drive(tmp_path, "seed")
+    out = drive(tmp_path, "execute-search", {"query": "民法典"})
+    assert out["source"] == "db"
+
+
+def test_stale_sidecar_reports_source(tmp_path) -> None:
+    drive(tmp_path, "seed")
+    out = drive(tmp_path, "stale")
+    assert out["available"] is True
+    assert out["source"] == "sidecar"
+
+
+def test_persist_failure_still_serves_fresh_db(tmp_path) -> None:
+    out = drive(tmp_path, "persist-fail")
+    assert out["refreshed"] is True
+    assert out["available"] is True
+    assert out["source"] == "db"
+    assert len(out["hits"]) >= 2

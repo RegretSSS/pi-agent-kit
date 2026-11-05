@@ -34,7 +34,8 @@ export default async function (pi: ExtensionAPI) {
 			}),
 		}),
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			pending = { brief: params.brief, historyActive: await historyLikelyActive() };
+			const historyActive = await historyLikelyActive();
+			pending = pending === null ? { brief: params.brief, historyActive } : { brief: `${pending.brief}\n---\n${params.brief}`, historyActive };
 			return {
 				content: [{ type: "text", text: "compaction scheduled for the next turn boundary" }],
 				details: {},
@@ -49,6 +50,7 @@ export default async function (pi: ExtensionAPI) {
 		ctx.compact({
 			customInstructions: buildCompactInstructions(brief, historyActive),
 			onError: (error) => {
+				console.error(`compact failed: ${error.message}`);
 				if (ctx.hasUI) ctx.ui.notify(`compact failed: ${error.message}`, "error");
 			},
 		});

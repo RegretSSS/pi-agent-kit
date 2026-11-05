@@ -19,14 +19,34 @@ snippet = pathlib.Path("agents-md/snippet.md").read_text()
 headings = ["## 问题即 lint", "## codemode 选取"]
 
 
+def fence_marks(lines):
+    open_fence = None
+    for line in lines:
+        stripped = line.lstrip()
+        if open_fence is None:
+            if stripped.startswith("```"):
+                open_fence = "```"
+            elif stripped.startswith("~~~"):
+                open_fence = "~~~"
+            continue
+        if stripped.startswith(open_fence):
+            open_fence = None
+    return open_fence
+
+
 def heading2_indexes(lines):
-    fence = False
+    fence = None
     starts = []
     for i, line in enumerate(lines):
-        if line.lstrip().startswith("```"):
-            fence = not fence
+        stripped = line.lstrip()
+        if fence is None:
+            if stripped.startswith("```") or stripped.startswith("~~~"):
+                fence = stripped[:3]
+                continue
+        elif stripped.startswith(fence):
+            fence = None
             continue
-        if fence:
+        if fence is not None:
             continue
         if line.startswith("## "):
             starts.append(i)
@@ -58,6 +78,10 @@ for heading in headings:
     if not occurrences:
         while lines and lines[-1].strip() == "":
             lines.pop()
+        unterminated = fence_marks(lines)
+        if unterminated:
+            lines.append(unterminated)
+            print("agents-md: closed unterminated fence before appending")
         lines += ["", *body, ""]
         changed.append(f"appended {heading}")
         continue
@@ -81,10 +105,16 @@ PY
 
 install_extensions() {
 	local dest="${HOME}/.pi/agent/extensions"
+	local exclude=("compact-instructions.ts")
 	mkdir -p "${dest}"
 	for src in extensions/*.ts; do
-		cp "${src}" "${dest}/$(basename "${src}")"
-		echo "extensions: deployed $(basename "${src}")"
+		local base
+		base="$(basename "${src}")"
+		if [[ " ${exclude[*]} " == *" ${base} "* ]]; then
+			continue
+		fi
+		cp "${src}" "${dest}/${base}"
+		echo "extensions: deployed ${base}"
 	done
 }
 
