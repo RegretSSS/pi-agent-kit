@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { rm, readFile } from "node:fs/promises";
 import { HistoryIndex, formatOutline, scoreRow, splitTerms, buildTools } from "../extensions/history.ts";
-import { buildCompactInstructions } from "../extensions/compact-instructions.ts";
+import { buildCompactInstructions } from "../extensions/compact-tool.ts";
 
 const [root, scenario, payload] = process.argv.slice(2);
 const dbPath = `${root}/bili.db`;

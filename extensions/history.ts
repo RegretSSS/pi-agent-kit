@@ -155,6 +155,9 @@ export class HistoryIndex {
 	private available = false;
 	private origin: "db" | "sidecar" = "sidecar";
 	private readonly hayCache = new Map<string, string>();
+	private epoch = 0;
+	private persistSeq = 0;
+	private persistFailed = false;
 
 	constructor(dbPath = defaultDbPath(), sidecarDir = defaultSidecarDir()) {
 		this.dbPath = dbPath;
@@ -212,7 +215,17 @@ export class HistoryIndex {
 
 	private async persistSidecar(rows: BlockRow[]): Promise<void> {
 		await mkdir(this.sidecarDir, { recursive: true });
-		const tmp = join(this.sidecarDir, `sidecar.${process.pid}.tmp`);
+		this.persistSeq += 1;
+		const tmp = join(this.sidecarDir, `sidecar.${process.pid}.${this.persistSeq}.tmp`);
+		try {
+			const existing = await readFile(this.sidecarPath(), "utf8");
+			const existingCount = existing.split("\n").filter((l) => l.trim().length > 0).length;
+			if (existingCount > rows.length) {
+				console.error(`history sidecar persist skipped: existing snapshot has ${existingCount} rows, refusing to overwrite with ${rows.length}`);
+				return;
+			}
+		} catch {
+		}
 		await writeFile(tmp, rows.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
 		await rename(tmp, this.sidecarPath());
 	}
@@ -283,11 +296,14 @@ export class HistoryIndex {
 	}
 
 	async refresh(): Promise<boolean> {
+		const epoch = ++this.epoch;
 		const signature = await this.currentSignature();
-		if (signature === null) return this.fallback();
-		if (signature === this.signature && this.rows !== null) return true;
+		if (epoch !== this.epoch) return this.available;
+		if (signature === null) return this.fallback(epoch);
+		if (signature === this.signature && this.rows !== null && !this.persistFailed) return true;
 		try {
 			const rows = this.readBlocks();
+			if (epoch !== this.epoch) return this.available;
 			this.rows = rows;
 			this.signature = signature;
 			this.available = true;
@@ -298,23 +314,26 @@ export class HistoryIndex {
 				try {
 					await this.persistSidecar(rows);
 					this.lastPayload = payload;
+					this.persistFailed = false;
 				} catch (err) {
+					this.persistFailed = true;
 					console.error(`history sidecar persist failed (serving fresh db data): ${err instanceof Error ? err.message : String(err)}`);
 				}
 			}
 			return true;
 		} catch {
-			return this.fallback();
+			return this.fallback(epoch);
 		}
 	}
 
-	private async fallback(): Promise<boolean> {
+	private async fallback(epoch: number): Promise<boolean> {
 		if (this.rows !== null) {
 			this.available = true;
 			return true;
 		}
 		try {
 			const rows = await this.loadSidecar();
+			if (epoch !== this.epoch) return this.available;
 			if (rows.length === 0) {
 				this.available = false;
 				return false;
@@ -325,6 +344,7 @@ export class HistoryIndex {
 			this.hayCache.clear();
 			return true;
 		} catch {
+			if (epoch !== this.epoch) return this.available;
 			this.available = false;
 			return false;
 		}
@@ -384,6 +404,7 @@ export function buildTools(Type: TypeBoxLike, index: HistoryIndex) {
 				return {
 					content: [{ type: "text", text: "history index unavailable: billion-context database not found and no sidecar snapshot exists. Fallback: grep ~/.pi/agent/sessions/*/<session>.jsonl" }],
 					details: { available: false, hits: [] },
+					isError: true,
 				};
 			}
 			if (hits.length === 0) {

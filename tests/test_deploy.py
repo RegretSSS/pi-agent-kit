@@ -116,19 +116,22 @@ def test_tilde_fence_not_hijacked() -> None:
 
 
 def outside_heading_count(text: str, heading: str) -> int:
-    fence = None
+    import re
+
+    fence_re = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+    open_fence = None
     count = 0
     for line in text.split("\n"):
-        stripped = line.lstrip()
-        if fence is None:
-            if stripped.startswith("```") or stripped.startswith("~~~"):
-                fence = stripped[:3]
+        m = fence_re.match(line)
+        if open_fence is None:
+            if m:
+                open_fence = m.group(1)
                 continue
-        elif stripped.startswith(fence):
-            fence = None
+            if line == heading:
+                count += 1
             continue
-        if fence is None and line == heading:
-            count += 1
+        if m and m.group(1)[0] == open_fence[0] and len(m.group(1)) >= len(open_fence) and not m.group(2).strip():
+            open_fence = None
     return count
 
 
@@ -148,13 +151,32 @@ def test_unterminated_fence_closed_before_append() -> None:
         assert target.read_text() == text
 
 
-def test_library_module_not_deployed_as_extension() -> None:
+def test_fresh_install_deploys_extension_set_and_prunes_legacy() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp)
-        result = run_deploy(home)
-        deployed = (home / ".pi" / "agent" / "extensions").glob("*.ts")
-        names = {p.name for p in deployed}
-        assert "compact-instructions.ts" not in names
-        assert "history.ts" in names
-        assert "compact-tool.ts" in names
-        assert "library module" not in result
+        ext_dir = home / ".pi" / "agent" / "extensions"
+        ext_dir.mkdir(parents=True)
+        (ext_dir / "compact-instructions.ts").write_text("stale legacy copy")
+        run_deploy(home)
+        names = {p.name for p in ext_dir.glob("*.ts")}
+        assert names == {"compact-tool.ts", "history.ts", "memory.ts", "tasks.ts"}
+        assert not (ext_dir / "compact-instructions.ts").exists()
+
+
+def test_long_fence_and_info_string_not_misread() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        target = home / ".agents" / "AGENTS.md"
+        target.parent.mkdir(parents=True)
+        target.write_text(
+            "# AGENTS.md\n\n````markdown\n## 问题即 lint\n示例正文必须保留\n```bash\necho documented-sample\n```\n````\n\n## My own section\n\nreal user text that must survive\n"
+        )
+        run_deploy(home)
+        text = target.read_text()
+        assert "示例正文必须保留" in text
+        assert "echo documented-sample" in text
+        assert "## My own section" in text
+        assert "real user text that must survive" in text
+        assert outside_heading_count(text, "## 问题即 lint") == 1
+        run_deploy(home)
+        assert target.read_text() == text

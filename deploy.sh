@@ -19,38 +19,34 @@ snippet = pathlib.Path("agents-md/snippet.md").read_text()
 headings = ["## 问题即 lint", "## codemode 选取"]
 
 
-def fence_marks(lines):
+import re as _re
+
+FENCE_RE = _re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def scan_lines(lines):
     open_fence = None
-    for line in lines:
-        stripped = line.lstrip()
+    headings = []
+    for i, line in enumerate(lines):
+        m = FENCE_RE.match(line)
         if open_fence is None:
-            if stripped.startswith("```"):
-                open_fence = "```"
-            elif stripped.startswith("~~~"):
-                open_fence = "~~~"
+            if m:
+                open_fence = m.group(1)
+                continue
+            if line.startswith("## "):
+                headings.append(i)
             continue
-        if stripped.startswith(open_fence):
+        if m and m.group(1)[0] == open_fence[0] and len(m.group(1)) >= len(open_fence) and not m.group(2).strip():
             open_fence = None
-    return open_fence
+    return headings, open_fence
+
+
+def fence_marks(lines):
+    return scan_lines(lines)[1]
 
 
 def heading2_indexes(lines):
-    fence = None
-    starts = []
-    for i, line in enumerate(lines):
-        stripped = line.lstrip()
-        if fence is None:
-            if stripped.startswith("```") or stripped.startswith("~~~"):
-                fence = stripped[:3]
-                continue
-        elif stripped.startswith(fence):
-            fence = None
-            continue
-        if fence is not None:
-            continue
-        if line.startswith("## "):
-            starts.append(i)
-    return starts
+    return scan_lines(lines)[0]
 
 
 def section_lines(text, heading):
@@ -105,16 +101,17 @@ PY
 
 install_extensions() {
 	local dest="${HOME}/.pi/agent/extensions"
-	local exclude=("compact-instructions.ts")
+	local prune=("compact-instructions.ts")
 	mkdir -p "${dest}"
 	for src in extensions/*.ts; do
-		local base
-		base="$(basename "${src}")"
-		if [[ " ${exclude[*]} " == *" ${base} "* ]]; then
-			continue
+		cp "${src}" "${dest}/$(basename "${src}")"
+		echo "extensions: deployed $(basename "${src}")"
+	done
+	for name in "${prune[@]}"; do
+		if [[ -f "${dest}/${name}" ]]; then
+			rm -f "${dest}/${name}"
+			echo "extensions: pruned ${name}"
 		fi
-		cp "${src}" "${dest}/${base}"
-		echo "extensions: deployed ${base}"
 	done
 }
 
