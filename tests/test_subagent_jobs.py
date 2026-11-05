@@ -87,51 +87,65 @@ def test_store_path_layout() -> None:
 
 
 def make_fake_upstream(home: Path) -> None:
-    rpc_dir = home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/dist"
-    rpc_dir.mkdir(parents=True)
-    (rpc_dir / "cross-extension-rpc.js").write_text(
-        "    const unsubPing = handleRpc(events, \"subagents:rpc:ping\", () => {\n"
-        "        return { version: PROTOCOL_VERSION };\n"
-        "    });\n",
+    src_dir = home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "cross-extension-rpc.ts").write_text(
+        "export interface RpcDeps {\n"
+        "  events: EventBus;\n"
+        "  pi: unknown;\n"
+        "  getCtx: () => unknown | undefined;\n"
+        "  manager: SpawnCapable;\n"
+        "}\n"
+        '  const unsubPing = handleRpc(events, "subagents:rpc:ping", () => {\n'
+        "    return { version: PROTOCOL_VERSION };\n"
+        "  });\n",
         encoding="utf8",
     )
-    (rpc_dir / "index.js").write_text(
-        "            rpcHandle = registerRpcHandlers({\n"
-        "                events: pi.events,\n"
-        "                pi,\n"
-        "                getCtx: () => currentCtx,\n"
-        "            });\n",
+    (src_dir / "index.ts").write_text(
+        "      rpcHandle = registerRpcHandlers({\n"
+        "        events: pi.events,\n"
+        "        pi,\n"
+        "        getCtx: () => currentCtx,\n",
         encoding="utf8",
     )
 
 
-def run_patch(home: Path) -> subprocess.CompletedProcess:
+def run_patch(home: Path, tmp: Path | None = None) -> subprocess.CompletedProcess:
     env = dict(os.environ, HOME=str(home))
+    if tmp is not None:
+        env["TMPDIR"] = str(tmp)
     return subprocess.run(["node", str(PATCH)], capture_output=True, text=True, env=env, cwd=REPO)
 
 
 def test_patch_script_idempotent_and_anchored(tmp_path) -> None:
     home = tmp_path
+    tmp = tmp_path / "tmpdir"
+    jiti = tmp / "jiti" / "nested"
+    jiti.mkdir(parents=True)
+    (jiti / "stale.mjs").write_text("old cache", encoding="utf8")
     make_fake_upstream(home)
-    first = run_patch(home)
+    first = run_patch(home, tmp)
     assert first.returncode == 0, first.stderr
-    assert "注入完成" in first.stdout
-    rpc_text = (home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/dist/cross-extension-rpc.js").read_text()
+    assert first.stdout.count("注入完成") == 3
+    rpc_text = (home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/src/cross-extension-rpc.ts").read_text()
     assert "subagents:rpc:schedule_list" in rpc_text
     assert "requireScheduler" in rpc_text
-    index_text = (home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/dist/index.js").read_text()
+    assert "getScheduler?: () => unknown;" in rpc_text
+    index_text = (home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/src/index.ts").read_text()
     assert "getScheduler: () => scheduler," in index_text
-    second = run_patch(home)
+    assert not (tmp / "jiti").exists()
+    second = run_patch(home, tmp)
     assert second.returncode == 0
-    assert "已打过" in second.stdout
+    assert second.stdout.count("已打过") == 3
+    assert "已清理 jiti" in second.stdout
 
 
 def test_patch_script_fails_cleanly_on_anchor_miss(tmp_path) -> None:
     home = tmp_path
-    rpc_dir = home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/dist"
-    rpc_dir.mkdir(parents=True)
-    (rpc_dir / "cross-extension-rpc.js").write_text("upgraded beyond recognition", encoding="utf8")
-    (rpc_dir / "index.js").write_text("anything", encoding="utf8")
-    result = run_patch(home)
+    src_dir = home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "cross-extension-rpc.ts").write_text("upgraded beyond recognition", encoding="utf8")
+    (src_dir / "index.ts").write_text("anything", encoding="utf8")
+    result = run_patch(home, tmp_path)
     assert result.returncode == 1
     assert "锚点未命中" in result.stdout + result.stderr
