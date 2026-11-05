@@ -191,6 +191,16 @@ def test_staggered_same_instance_refresh_publishes_clean_snapshot(tmp_path) -> N
     for f in out["files"]:
         assert f["parsed"] == f["lines"], f"broken json lines: {f}"
         assert f["generations"] in (["old"], ["new"]), f"mixed generations: {f}"
+    assert out["fallbackSource"] == "sidecar"
+    assert all(s.startswith("newsess") for s in out["fallbackSessions"]), out["fallbackSessions"]
+    assert len(out["fallbackSessions"]) > 0
+
+
+def test_sweep_removes_only_stale_snapshots(tmp_path) -> None:
+    out = drive(tmp_path, "sweep")
+    assert "sidecar.111.1.jsonl" not in out["remaining"]
+    assert "sidecar.333.3.tmp" not in out["remaining"]
+    assert "sidecar.222.2.jsonl" in out["remaining"]
 
 
 def test_two_instances_write_distinct_snapshots(tmp_path) -> None:

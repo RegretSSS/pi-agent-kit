@@ -266,7 +266,7 @@ export class HistoryIndex {
 			const entries = await readdir(this.sidecarDir);
 			const cutoff = Date.now() - 7200_000;
 			for (const name of entries) {
-				if (!/^sidecar\.\d+(\.\d+)?\.jsonl$/.test(name)) continue;
+				if (!/^sidecar\.\d+(\.\d+)?\.(jsonl|tmp)$/.test(name)) continue;
 				const full = join(this.sidecarDir, name);
 				if (full === this.sidecarFile()) continue;
 				try {
@@ -369,8 +369,8 @@ export class HistoryIndex {
 					this.lastPayload = payload;
 					this.persistFailed = false;
 				} catch (err) {
-					if (epoch !== this.epoch) return this.available;
 					this.persistFailed = true;
+					if (epoch !== this.epoch) return this.available;
 					console.error(`history sidecar persist failed (serving fresh db data): ${err instanceof Error ? err.message : String(err)}`);
 				}
 			}

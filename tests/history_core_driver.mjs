@@ -201,6 +201,10 @@ switch (scenario) {
 		break;
 	}
 	case "staggered-race": {
+		const { mkdir: warmMk, writeFile: warmWf } = await import("node:fs/promises");
+		const { join: warmJoin } = await import("node:path");
+		await warmMk(sidecarDir, { recursive: true });
+		await warmWf(warmJoin(sidecarDir, "warm.tmp"), "x");
 		const db = new DatabaseSync(dbPath);
 		db.exec("CREATE TABLE blocks (session_id TEXT, block_id TEXT, ord INTEGER, tier INTEGER, active INTEGER, start_seq INTEGER, end_seq INTEGER, payload_json TEXT)");
 		const stmt = db.prepare("INSERT INTO blocks VALUES (?,?,?,?,?,?,?,?)");
@@ -242,9 +246,33 @@ switch (scenario) {
 			}
 			perFile.push({ lines: lines.length, parsed, generations: [...generations] });
 		}
+		await rm(dbPath, { force: true });
+		const survivor = new HistoryIndex(dbPath, sidecarDir);
+		await survivor.refresh();
+		const fbHits = await survivor.search("新正文");
 		out.ok = ok;
 		out.results = results;
 		out.files = perFile;
+		out.fallbackSource = survivor.source();
+		out.fallbackSessions = [...new Set(fbHits.map((h) => h.row.session))];
+		break;
+	}
+	case "sweep": {
+		seedDb();
+		const dir = `${root}/sweepdir`;
+		await mkdir(dir, { recursive: true });
+		const three = new Date(Date.now() - 10800_000);
+		const one = new Date(Date.now() - 3600_000);
+		await writeFile(`${dir}/sidecar.111.1.jsonl`, "{}\n");
+		await writeFile(`${dir}/sidecar.222.2.jsonl`, "{}\n");
+		await writeFile(`${dir}/sidecar.333.3.tmp`, "{}\n");
+		await utimes(`${dir}/sidecar.111.1.jsonl`, three, three);
+		await utimes(`${dir}/sidecar.222.2.jsonl`, one, one);
+		await utimes(`${dir}/sidecar.333.3.tmp`, three, three);
+		const idx = new HistoryIndex(dbPath, dir);
+		await idx.refresh();
+		const names = (await (await import("node:fs/promises")).readdir(dir)).sort();
+		out.remaining = names;
 		break;
 	}
 	case "two-instances": {
