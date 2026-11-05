@@ -145,6 +145,25 @@ switch (scenario) {
 		out.sidecarUnchanged = (await readFile(`${sidecarDir}/sidecar.jsonl`, "utf8")) === before;
 		break;
 	}
+	case "shrink": {
+		seedDb();
+		const first = new HistoryIndex(dbPath, sidecarDir);
+		await first.refresh();
+		const db = new DatabaseSync(dbPath);
+		db.exec("PRAGMA busy_timeout = 3000");
+		db.exec("DELETE FROM blocks WHERE session_id LIKE '01a1a77%' OR session_id LIKE '01a1a78%'");
+		db.close();
+		const second = new HistoryIndex(dbPath, sidecarDir);
+		out.refreshed = await second.refresh();
+		await rm(dbPath, { force: true });
+		const third = new HistoryIndex(dbPath, sidecarDir);
+		await third.refresh();
+		const all = await third.search("民法典");
+		out.sessions = [...new Set(all.map((h) => h.row.session))];
+		out.count = all.length;
+		out.source = third.source();
+		break;
+	}
 	case "stale": {
 		await rm(dbPath, { force: true });
 		const idx = new HistoryIndex(dbPath, sidecarDir);

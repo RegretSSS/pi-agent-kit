@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -158,6 +158,7 @@ export class HistoryIndex {
 	private epoch = 0;
 	private persistSeq = 0;
 	private persistFailed = false;
+	private persistChain: Promise<void> = Promise.resolve();
 
 	constructor(dbPath = defaultDbPath(), sidecarDir = defaultSidecarDir()) {
 		this.dbPath = dbPath;
@@ -213,21 +214,50 @@ export class HistoryIndex {
 		return rows;
 	}
 
-	private async persistSidecar(rows: BlockRow[]): Promise<void> {
-		await mkdir(this.sidecarDir, { recursive: true });
-		this.persistSeq += 1;
-		const tmp = join(this.sidecarDir, `sidecar.${process.pid}.${this.persistSeq}.tmp`);
-		try {
-			const existing = await readFile(this.sidecarPath(), "utf8");
-			const existingCount = existing.split("\n").filter((l) => l.trim().length > 0).length;
-			if (existingCount > rows.length) {
-				console.error(`history sidecar persist skipped: existing snapshot has ${existingCount} rows, refusing to overwrite with ${rows.length}`);
-				return;
+	private async acquireLock(lockPath: string): Promise<() => Promise<void>> {
+		for (let attempt = 0; ; attempt += 1) {
+			try {
+				const handle = await open(lockPath, "wx");
+				return async () => {
+					await handle.close();
+					await rm(lockPath, { force: true });
+				};
+			} catch {
+				try {
+					const s = await stat(lockPath);
+					if (Date.now() - s.mtimeMs > 10000) {
+						await rm(lockPath, { force: true });
+						continue;
+					}
+				} catch {
+					continue;
+				}
+				if (attempt > 50) throw new Error("sidecar lock contention");
+				await new Promise((resolve) => setTimeout(resolve, 100));
 			}
-		} catch {
 		}
-		await writeFile(tmp, rows.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
-		await rename(tmp, this.sidecarPath());
+	}
+
+	private async persistSidecar(rows: BlockRow[], readSignature: string): Promise<void> {
+		const run = this.persistChain.then(() => this.persistLocked(rows, readSignature));
+		this.persistChain = run.catch(() => {});
+		await run;
+	}
+
+	private async persistLocked(rows: BlockRow[], readSignature: string): Promise<void> {
+		await mkdir(this.sidecarDir, { recursive: true });
+		const lockPath = join(this.sidecarDir, "sidecar.lock");
+		const release = await this.acquireLock(lockPath);
+		try {
+			const current = await this.currentSignature();
+			if (current !== readSignature) return;
+			this.persistSeq += 1;
+			const tmp = join(this.sidecarDir, `sidecar.${process.pid}.${this.persistSeq}.tmp`);
+			await writeFile(tmp, rows.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+			await rename(tmp, this.sidecarPath());
+		} finally {
+			await release();
+		}
 	}
 
 	private openDb(): DatabaseSync {
@@ -312,10 +342,12 @@ export class HistoryIndex {
 			const payload = rows.map((r) => JSON.stringify(r)).join("\n");
 			if (payload !== this.lastPayload) {
 				try {
-					await this.persistSidecar(rows);
+					await this.persistSidecar(rows, signature);
+					if (epoch !== this.epoch) return this.available;
 					this.lastPayload = payload;
 					this.persistFailed = false;
 				} catch (err) {
+					if (epoch !== this.epoch) return this.available;
 					this.persistFailed = true;
 					console.error(`history sidecar persist failed (serving fresh db data): ${err instanceof Error ? err.message : String(err)}`);
 				}

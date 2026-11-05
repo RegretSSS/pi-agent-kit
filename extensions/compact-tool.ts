@@ -26,7 +26,7 @@ export function buildCompactInstructions(brief: string, historyActive: boolean):
 	return `${brief}\n\n${indexSpec}`;
 }
 
-const MERGED_BRIEF_MAX = 8000;
+const MERGED_BRIEF_CODEPOINTS = 4000;
 
 async function historyLikelyActive(): Promise<boolean> {
 	const db = join(homedir(), ".local/share/billion-context/sessions/index.db");
@@ -60,7 +60,7 @@ export default async function (pi: ExtensionAPI) {
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const historyActive = await historyLikelyActive();
 			const merged = pending === null ? params.brief : `${pending.brief}\n---\n${params.brief}`;
-			pending = { brief: merged.slice(0, MERGED_BRIEF_MAX), historyActive };
+			pending = { brief: Array.from(merged).slice(0, MERGED_BRIEF_CODEPOINTS).join(""), historyActive };
 			return {
 				content: [{ type: "text", text: "compaction scheduled for the next turn boundary" }],
 				details: {},

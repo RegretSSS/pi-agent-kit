@@ -103,15 +103,15 @@ install_extensions() {
 	local dest="${HOME}/.pi/agent/extensions"
 	local prune=("compact-instructions.ts")
 	mkdir -p "${dest}"
-	for src in extensions/*.ts; do
-		cp "${src}" "${dest}/$(basename "${src}")"
-		echo "extensions: deployed $(basename "${src}")"
-	done
 	for name in "${prune[@]}"; do
 		if [[ -f "${dest}/${name}" ]]; then
 			rm -f "${dest}/${name}"
 			echo "extensions: pruned ${name}"
 		fi
+	done
+	for src in extensions/*.ts; do
+		cp "${src}" "${dest}/$(basename "${src}")"
+		echo "extensions: deployed $(basename "${src}")"
 	done
 }
 

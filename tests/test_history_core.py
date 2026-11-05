@@ -157,3 +157,11 @@ def test_persist_failure_still_serves_fresh_db(tmp_path) -> None:
     assert out["available"] is True
     assert out["source"] == "db"
     assert len(out["hits"]) >= 2
+
+
+def test_gc_shrink_leaves_no_ghost_blocks(tmp_path) -> None:
+    out = drive(tmp_path, "shrink")
+    assert out["refreshed"] is True
+    assert out["source"] == "sidecar"
+    assert out["sessions"] == ["01a1a94b-7621"]
+    assert all(not s.startswith(("01a1a77", "01a1a78")) for s in out["sessions"])
