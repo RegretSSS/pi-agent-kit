@@ -64,3 +64,8 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D7-4 fold-index 单活代际链+单靶点溯源**:compact 摘要强制以 <fold-index> 头开始,指示"若上下文已有旧 fold-index,蒸馏并入、至多一个存活";溯源列只有 history_search 一个入口(bili 活跃时)。理由:pi 的 jsonl 机制天然是"显式单靶点(内存只见最新 compaction)+底层多靶点(每代落盘)",索引头遵守同构约束;多入口列(jsonl/grep)只增加模型选择噪声。
 - **D7-5 compact-instructions 纯函数抽出**:fold-index 指示文本与 buildCompactInstructions 独立成无依赖文件,compact-tool.ts 的 typebox 改动态 import。理由:静态值导入 typebox 使 driver 无法裸 node --experimental-strip-types 直测(D3-7 原则重申,新增 pattern lint extension_static_typebox 守护)。
 - **D7-6 codemode 选取决策树入 AGENTS.md 管理节**:deploy.sh 从单节管理改为多节列表驱动(["## 问题即 lint","## codemode 选取"]),节外内容仍原样保留。决策树 ≤100 字,依据夜班实测 miss 模式(bash 里 sed 改脚本再跑的调试链 ×7 轮、同主题连续状态收集 ×9 条)。
+
+## D7 补遗(四轮对抗审计后)
+
+- **D7-7 sidecar 快照发布协议**:锁文件 + 锁内 db 签名复查——只有"当前 db 签名与读取时一致"的快照才可落盘,旧签名持有者放弃写;实例内 persist 串行链 + epoch 复查罩住全部晚到赋值。理由(R3/R4 实证教训):①跨进程写没有全序,行数当新近度的启发式把 GC 合法收缩变成永久毒化(删块幽灵服务);②"锁内重验数据签名"是唯一不需要分布式协调的单调发布条件。记边界:锁等待上限 5s(50×100ms),超限抛错走 persistFailed 重试路径。
+- **D7-8 部署语义**:扩展部署 = prune 清单先行 + 全量 *.ts 拷贝;库文件(compact-instructions 类)一律内联进扩展文件,不落 pi 自动发现目录。理由:pi 加载器把目录内每个 .ts 当扩展,库文件会报"does not export a valid factory";排除名单曾使全新安装的 compact 静默失效(R3 实证),prune 先行防同名复发。
