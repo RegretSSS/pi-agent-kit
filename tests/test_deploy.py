@@ -159,7 +159,7 @@ def test_fresh_install_deploys_extension_set_and_prunes_legacy() -> None:
         (ext_dir / "compact-instructions.ts").write_text("stale legacy copy")
         run_deploy(home)
         names = {p.name for p in ext_dir.glob("*.ts")}
-        assert names == {"compact-tool.ts", "history.ts", "memory.ts", "tasks.ts"}
+        assert names == {"a2a-inbox.ts", "compact-tool.ts", "history.ts", "memory.ts", "tasks.ts"}
         assert not (ext_dir / "compact-instructions.ts").exists()
 
 
