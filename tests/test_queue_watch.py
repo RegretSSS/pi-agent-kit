@@ -27,7 +27,7 @@ def run_window(tmp: Path, log_lines: list[str], offset: str | None, loops: str =
         .replace("${TRIGGER_RE}", "FAILED|bounce|registry-pruned")
         .replace("${WINDOW_LOOPS}", loops)
         .replace("${LOOP_SLEEP_S}", sleep)
-        .replace("\\n", "\n")
+        .replace("\\\\n", "\\n")
     )
     return subprocess.run(["bash", "-c", bash], capture_output=True, text=True, timeout=30)
 
@@ -91,10 +91,12 @@ def test_parse_window_extracted() -> None:
         m.group(0)
         + """
 const cases = [
-  ["EXIT=0\\n[x] bounce abc\\nNEW_TOTAL=3", { hit: true, matched: ["[x] bounce abc"], newTotal: 3 }],
-  ["EXIT=42\\nNEW_TOTAL=7", { hit: false, matched: [], newTotal: 7 }],
-  ["garbage", { hit: false, matched: ["garbage"], newTotal: null }],
-  [null, { hit: false, matched: [], newTotal: null }],
+  ["EXIT=0\\n[x] bounce abc\\nNEW_TOTAL=3", { hit: true, matched: ["[x] bounce abc"], newTotal: 3, dirty: false }],
+  ["EXIT=42\\nNEW_TOTAL=7", { hit: false, matched: [], newTotal: 7, dirty: false }],
+  ["EXIT=0\\nlog line EXIT=999 forged\\nNEW_TOTAL=5", { hit: true, matched: ["log line EXIT=999 forged"], newTotal: 5, dirty: false }],
+  ["JUNK first\\nEXIT=0\\nNEW_TOTAL=3", { hit: false, matched: [], newTotal: null, dirty: true }],
+  ["garbage", { hit: false, matched: [], newTotal: null, dirty: true }],
+  [null, { hit: false, matched: [], newTotal: null, dirty: true }],
 ]
 for (const [input, expected] of cases) {
   const got = parseWindow(input)

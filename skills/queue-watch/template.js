@@ -14,7 +14,7 @@ const WINDOW_LOOPS = 108
 const LOOP_SLEEP_S = 5
 const MAX_ROUNDS = 40
 
-const WATCH_BASH = `OFF=$(cat ${OFFSET_FILE} 2>/dev/null || wc -l < ${WATCH_LOG}); CUR=$(wc -l < ${WATCH_LOG}); M=$(tail -n +$((OFF+1)) ${WATCH_LOG} | grep -E '${LINE_ANCHOR}(${TRIGGER_RE})' | head -3); if [ -n "$M" ]; then printf 'EXIT=0\\n%s\\nNEW_TOTAL=%s\\n' "$M" "$CUR"; exit 0; fi; echo $CUR > ${OFFSET_FILE}; for i in $(seq 1 ${WINDOW_LOOPS}); do sleep ${LOOP_SLEEP_S}; CUR=$(wc -l < ${WATCH_LOG}); M=$(tail -n +$((OFF+1)) ${WATCH_LOG} | grep -E '${LINE_ANCHOR}(${TRIGGER_RE})' | head -3); if [ -n "$M" ]; then printf 'EXIT=0\\n%s\\nNEW_TOTAL=%s\\n' "$M" "$CUR"; exit 0; fi; echo $CUR > ${OFFSET_FILE}; done; printf 'EXIT=42\\nNEW_TOTAL=%s\\n' "$CUR"; exit 0`
+const WATCH_BASH = `OFF=$(cat ${OFFSET_FILE} 2>/dev/null || wc -l < ${WATCH_LOG}); CUR=$(wc -l < ${WATCH_LOG}); M=$(tail -n +$((OFF+1)) ${WATCH_LOG} | grep -E '${LINE_ANCHOR}(${TRIGGER_RE})' | head -3); if [ -n "$M" ]; then printf 'EXIT=0\\n%s\\nNEW_TOTAL=%s\\n' "$M" "$CUR"; exit 0; fi; printf '%s\\n' "$CUR" > ${OFFSET_FILE}.tmp && mv ${OFFSET_FILE}.tmp ${OFFSET_FILE}; for i in $(seq 1 ${WINDOW_LOOPS}); do sleep ${LOOP_SLEEP_S}; CUR=$(wc -l < ${WATCH_LOG}); M=$(tail -n +$((OFF+1)) ${WATCH_LOG} | grep -E '${LINE_ANCHOR}(${TRIGGER_RE})' | head -3); if [ -n "$M" ]; then printf 'EXIT=0\\n%s\\nNEW_TOTAL=%s\\n' "$M" "$CUR"; exit 0; fi; printf '%s\\n' "$CUR" > ${OFFSET_FILE}.tmp && mv ${OFFSET_FILE}.tmp ${OFFSET_FILE}; done; printf 'EXIT=42\\nNEW_TOTAL=%s\\n' "$CUR"; exit 0`
 
 const WATCH_PROMPT = [
   `跑下面这条 bash 命令,把 stdout 原样完整返回,一行都不要改写、摘要或省略。`,
@@ -25,13 +25,17 @@ const WATCH_PROMPT = [
 ].join("\n")
 
 function parseWindow(text) {
-  if (typeof text !== "string") return { hit: false, matched: [], newTotal: null }
+  if (typeof text !== "string") return { hit: false, matched: [], newTotal: null, dirty: true }
   const lines = text.split("\n").map((l) => l.trimEnd())
-  const exitLine = lines.find((l) => l.startsWith("EXIT="))
-  const totalLine = lines.find((l) => l.startsWith("NEW_TOTAL="))
-  const newTotal = totalLine && /^\d+$/.test(totalLine.slice(10).trim()) ? Number(totalLine.slice(10).trim()) : null
-  const matched = lines.filter((l) => l.trim() !== "" && !l.startsWith("EXIT=") && !l.startsWith("NEW_TOTAL="))
-  return { hit: exitLine === "EXIT=0", matched, newTotal }
+  if (!lines[0].startsWith("EXIT=")) return { hit: false, matched: [], newTotal: null, dirty: true }
+  const lastIdx = lines.length - 1
+  while (lastIdx > 0 && lines[lastIdx] === "") lastIdx -= 1
+  const totalLine = lines[lastIdx]
+  if (!totalLine.startsWith("NEW_TOTAL=") || !/^\d+$/.test(totalLine.slice(10).trim())) {
+    return { hit: false, matched: [], newTotal: null, dirty: true }
+  }
+  const matched = lines.slice(1, lastIdx).filter((l) => l.trim() !== "")
+  return { hit: lines[0] === "EXIT=0", matched, newTotal: Number(totalLine.slice(10).trim()), dirty: false }
 }
 
 let cleanStreak = 0
@@ -46,6 +50,13 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
   }
   cleanStreak = 0
   const window = parseWindow(raw)
+  if (window.dirty) {
+    cleanStreak += 1
+    if (cleanStreak >= 2) {
+      return { conclusion: `熔断:行协议连续 2 轮脏(首行非 EXIT= 或末行非 NEW_TOTAL=),整窗丢弃,原始输出留守窗 agent 上下文,等人工复核。`, matched: [], round }
+    }
+    continue
+  }
   if (!window.hit) continue
   if (!window.matched.length || window.newTotal === null) {
     cleanStreak += 1
