@@ -182,3 +182,17 @@ def test_fallback_reads_newest_snapshot(tmp_path) -> None:
     assert out["refreshed"] is True
     assert out["source"] == "sidecar"
     assert out["sessions"] == ["s-new"]
+
+
+def test_staggered_same_instance_refresh_publishes_clean_snapshot(tmp_path) -> None:
+    out = drive(tmp_path, "staggered-race")
+    assert out["ok"] is True
+    assert len(out["files"]) >= 1
+    for f in out["files"]:
+        assert f["parsed"] == f["lines"], f"broken json lines: {f}"
+        assert f["generations"] in (["old"], ["new"]), f"mixed generations: {f}"
+
+
+def test_two_instances_write_distinct_snapshots(tmp_path) -> None:
+    out = drive(tmp_path, "two-instances")
+    assert out["jsonlCount"] == 2

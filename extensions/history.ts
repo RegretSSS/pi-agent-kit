@@ -16,6 +16,8 @@ const SESSION_ID_RADIUS = 18;
 const TOPIC_BUDGET = 80;
 const CJK = /[一-鿿]/;
 
+let instanceCounter = 0;
+
 export type BlockRow = {
 	session: string;
 	blockId: string;
@@ -157,6 +159,8 @@ export class HistoryIndex {
 	private readonly hayCache = new Map<string, string>();
 	private epoch = 0;
 	private persistFailed = false;
+	private readonly instanceId = (instanceCounter += 1);
+	private persistMu: Promise<void> = Promise.resolve();
 
 	constructor(dbPath = defaultDbPath(), sidecarDir = defaultSidecarDir()) {
 		this.dbPath = dbPath;
@@ -220,7 +224,7 @@ export class HistoryIndex {
 		}
 		const candidates: Array<{ name: string; mtime: number }> = [];
 		for (const name of [...entries]) {
-			if (name !== "sidecar.jsonl" && !/^sidecar\.\d+\.jsonl$/.test(name)) continue;
+			if (name !== "sidecar.jsonl" && !/^sidecar\.\d+(\.\d+)?\.jsonl$/.test(name)) continue;
 			try {
 				const s = await stat(join(this.sidecarDir, name));
 				candidates.push({ name, mtime: s.mtimeMs });
@@ -240,28 +244,37 @@ export class HistoryIndex {
 	}
 
 	private sidecarFile(): string {
-		return join(this.sidecarDir, `sidecar.${process.pid}.jsonl`);
+		return join(this.sidecarDir, `sidecar.${process.pid}.${this.instanceId}.jsonl`);
 	}
 
-	private async persistSidecar(rows: BlockRow[]): Promise<void> {
+	private async doPersist(rows: BlockRow[]): Promise<void> {
 		await mkdir(this.sidecarDir, { recursive: true });
-		const tmp = join(this.sidecarDir, `sidecar.${process.pid}.tmp`);
+		const tmp = join(this.sidecarDir, `sidecar.${process.pid}.${this.instanceId}.tmp`);
 		await writeFile(tmp, rows.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
 		await rename(tmp, this.sidecarFile());
 		await this.sweepStaleSnapshots();
 	}
 
+	private async persistSidecar(rows: BlockRow[]): Promise<void> {
+		const run = this.persistMu.then(() => this.doPersist(rows));
+		this.persistMu = run.catch(() => {});
+		await run;
+	}
+
 	private async sweepStaleSnapshots(): Promise<void> {
 		try {
 			const entries = await readdir(this.sidecarDir);
-			const cutoff = Date.now() - 3600_000;
+			const cutoff = Date.now() - 7200_000;
 			for (const name of entries) {
-				if (!/^sidecar\.\d+\.jsonl$/.test(name)) continue;
+				if (!/^sidecar\.\d+(\.\d+)?\.jsonl$/.test(name)) continue;
 				const full = join(this.sidecarDir, name);
 				if (full === this.sidecarFile()) continue;
 				try {
 					const s = await stat(full);
-					if (s.mtimeMs < cutoff) await rm(full, { force: true });
+					if (s.mtimeMs >= cutoff) continue;
+					const again = await stat(full);
+					if (again.mtimeMs >= cutoff) continue;
+					await rm(full, { force: true });
 				} catch {
 				}
 			}

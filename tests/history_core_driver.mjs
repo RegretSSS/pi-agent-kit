@@ -135,7 +135,9 @@ switch (scenario) {
 		const first = new HistoryIndex(dbPath, sidecarDir);
 		await first.refresh();
 		const { join } = await import("node:path");
-		const before = await readFile(join(sidecarDir, `sidecar.${process.pid}.jsonl`), "utf8");
+		const { readdir: ls } = await import("node:fs/promises");
+		const pick = async () => (await ls(sidecarDir)).filter((n) => n.endsWith(".jsonl")).sort()[0];
+		const before = await readFile(join(sidecarDir, await pick()), "utf8");
 		const db = new DatabaseSync(dbPath);
 		db.exec("PRAGMA busy_timeout = 3000");
 		db.exec("DELETE FROM blocks");
@@ -143,7 +145,7 @@ switch (scenario) {
 		const second = new HistoryIndex(dbPath, sidecarDir);
 		out.refreshed = await second.refresh();
 		out.available = second.isAvailable();
-		out.sidecarUnchanged = (await readFile(join(sidecarDir, `sidecar.${process.pid}.jsonl`), "utf8")) === before;
+		out.sidecarUnchanged = (await readFile(join(sidecarDir, await pick()), "utf8")) === before;
 		break;
 	}
 	case "shrink": {
@@ -196,6 +198,63 @@ switch (scenario) {
 		out.refreshed = await idx.refresh();
 		out.source = idx.source();
 		out.sessions = (await idx.search("民法典")).map((h) => h.row.session);
+		break;
+	}
+	case "staggered-race": {
+		const db = new DatabaseSync(dbPath);
+		db.exec("CREATE TABLE blocks (session_id TEXT, block_id TEXT, ord INTEGER, tier INTEGER, active INTEGER, start_seq INTEGER, end_seq INTEGER, payload_json TEXT)");
+		const stmt = db.prepare("INSERT INTO blocks VALUES (?,?,?,?,?,?,?,?)");
+		for (let i = 0; i < 60; i += 1) {
+			stmt.run(`oldsess-${i}`, "b1", 0, 1, 1, 0, 9, JSON.stringify({ blockId: "b1", tier: 1, topic: `旧代${i}`, compressedTokens: 1, summary: "旧正文".repeat(4000) + `标记${i}` }));
+		}
+		db.close();
+		const idx = new HistoryIndex(dbPath, sidecarDir);
+		const first = idx.refresh();
+		await new Promise((r) => setTimeout(r, 2));
+		const db2 = new DatabaseSync(dbPath);
+		db2.exec("PRAGMA busy_timeout = 3000");
+		db2.exec("DELETE FROM blocks");
+		const stmt2 = db2.prepare("INSERT INTO blocks VALUES (?,?,?,?,?,?,?,?)");
+		for (let i = 0; i < 5; i += 1) {
+			stmt2.run(`newsess-${i}`, "b1", 0, 1, 1, 0, 9, JSON.stringify({ blockId: "b1", tier: 1, topic: `新代${i}`, compressedTokens: 1, summary: "新正文".repeat(4000) + `标记${i}` }));
+		}
+		db2.close();
+		const second = idx.refresh();
+		const results = await Promise.all([first, second]);
+		const ok = results.some(Boolean);
+		const { readdir: ls, readFile: rf } = await import("node:fs/promises");
+		const { join: j } = await import("node:path");
+		const files = (await ls(sidecarDir)).filter((n) => n.endsWith(".jsonl"));
+		const perFile = [];
+		for (const name of files) {
+			const text = await rf(j(sidecarDir, name), "utf8");
+			const lines = text.split("\n").filter((l) => l.trim().length > 0);
+			let parsed = 0;
+			const generations = new Set();
+			for (const line of lines) {
+				try {
+					const row = JSON.parse(line);
+				 parsed += 1;
+					generations.add(row.session.startsWith("oldsess") ? "old" : "new");
+				} catch {
+					generations.add("broken");
+				}
+			}
+			perFile.push({ lines: lines.length, parsed, generations: [...generations] });
+		}
+		out.ok = ok;
+		out.results = results;
+		out.files = perFile;
+		break;
+	}
+	case "two-instances": {
+		seedDb();
+		const a = new HistoryIndex(dbPath, sidecarDir);
+		const b = new HistoryIndex(dbPath, sidecarDir);
+		await a.refresh();
+		await b.refresh();
+		const { readdir: ls } = await import("node:fs/promises");
+		out.jsonlCount = (await ls(sidecarDir)).filter((n) => n.endsWith(".jsonl")).length;
 		break;
 	}
 	case "stale": {
