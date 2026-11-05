@@ -55,3 +55,12 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **R-9 journal 重放信任边界(对抗审计后)**:任何同用户进程可 append journal,故重放逐事件过 `journalEventPlausible`(id 形状/pid 1..4194303/name≤200/cmd≤8192/cwd≤4096/state=running/gc ids 形状),畸形即丢弃;发信号一律过 `canSignalTask`(pid 在界内且 procStart 存在且匹配)——pid=1 组杀路径物理关闭。procStart 可被照抄伪造属已知残余(同用户本可直接 kill,攻击面提升有限),记边界不深防。
 - **R-10 审计接受的低危边界**:①memory/tasks 目录下 symlink 跟随写入(同用户攻击面,与直接写文件等价,不做 lstat 防护);②memory save/session_start 的 rebuildIndex 全量重建(实测 233ms@440 条,审计自评未达痛点线,增长到千条再做增量 upsert);③readFile 全量 vs offset 尾读(journalOffset 短路已消除常态成本,有新数据时整读一次的窗口留待 open+read 优化);④注入视图不含 archive-candidate/expiry 元数据(磁盘 frontmatter 有,模型可读文件)。
 - **R-11 enable-gate 的 LINT_ROOT 语义**:钩子导出 `LINT_ROOT=<目标仓>`,run-lints.sh 贯穿给 no_secrets/zero_comments(扫目标仓)与 commit lint(查目标仓);源码类 lint(扫 extensions/ 的 4 条)固定 kit 根。
+
+## D7(history 检索 + compact fold-index,基于 billion-context 机制研究)
+
+- **D7-1 侧车存块摘要全文而非轮廓**:`~/.agents/history/sidecar.jsonl` 拷贝 bili blocks 表的 summary 全文,refresh 才碰 bili db(mtime+size 签名短路),运行时检索零依赖——bili 停止/卸载/db 损坏后历史检索照常工作,db 缺失时沿用旧侧车(stale 降级)。理由:块摘要总量个人量级(24 块 ≈50KB),全拷的鲁棒性远超省下的磁盘。
+- **D7-2 检索三层漏斗+硬预算**:history_search 默认只出轮廓(每块一行 topic+关键词 ±120 字符预览,总预算 4000 字符,超限截断并回显 truncated);history_read 带 around 只取 ±500 合并窗口(预算 8000),不带取全块。理由:块摘要最坏 4k+ 字符/块,宽词一次返回就是洪水;模型先看地图再点菜。
+- **D7-3 CJK 无空格长词 2-gram 兜底**:整词 includes 未命中且词长 ≥4 含 CJK 时,按二字滑窗子词命中率 ≥0.5 计半分命中。理由:「民法典重灌」连写对「…民法典…重灌…」分置文本整词必落空(实测踩坑)。
+- **D7-4 fold-index 单活代际链+单靶点溯源**:compact 摘要强制以 <fold-index> 头开始,指示"若上下文已有旧 fold-index,蒸馏并入、至多一个存活";溯源列只有 history_search 一个入口(bili 活跃时)。理由:pi 的 jsonl 机制天然是"显式单靶点(内存只见最新 compaction)+底层多靶点(每代落盘)",索引头遵守同构约束;多入口列(jsonl/grep)只增加模型选择噪声。
+- **D7-5 compact-instructions 纯函数抽出**:fold-index 指示文本与 buildCompactInstructions 独立成无依赖文件,compact-tool.ts 的 typebox 改动态 import。理由:静态值导入 typebox 使 driver 无法裸 node --experimental-strip-types 直测(D3-7 原则重申,新增 pattern lint extension_static_typebox 守护)。
+- **D7-6 codemode 选取决策树入 AGENTS.md 管理节**:deploy.sh 从单节管理改为多节列表驱动(["## 问题即 lint","## codemode 选取"]),节外内容仍原样保留。决策树 ≤100 字,依据夜班实测 miss 模式(bash 里 sed 改脚本再跑的调试链 ×7 轮、同主题连续状态收集 ×9 条)。
