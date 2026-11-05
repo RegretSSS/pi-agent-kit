@@ -7,6 +7,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 const MEMORY_TYPES = ["user", "project", "feedback", "reference"] as const;
 const INDEX_HEADING = "# Memory Index";
 const FORBIDDEN_NAME = /[/\\\s:]|\.\.|[\x00-\x1f\x7f]/;
+const FENCE_RE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+const SECTION_HEADING_RE = /^ {0,3}## +(.+?)\s*$/;
+const SECTION_NAME_MAX_CHARS = 64;
 const RULE_SHAPED = [/看到[^。\n]{1,40}就\s*(fail|拒绝|报错|禁)/, /(一律|必须|禁止|不得|不许)[^。\n]{0,40}(一律|必须|禁止|不得|不许)/];
 const PROJECT_TTL_MS = 30 * 24 * 3600 * 1000;
 const BODY_PREVIEW_CHARS = 600;
@@ -39,10 +42,66 @@ export type MemoryEntry = {
 
 export type SearchHit = { entry: MemoryEntry; termsHit: number };
 
+export type SaveOptions = { mode?: "replace" | "append"; section?: string };
+
 export type SaveOutcome =
-	| { status: "saved"; entry: MemoryEntry; updated: boolean }
+	| { status: "saved"; entry: MemoryEntry; updated: boolean; merged?: "appended" | "section" }
 	| { status: "rejected-lints"; message: string }
 	| { status: "rejected-duplicate"; hits: SearchHit[] };
+
+export type BodySection = { title: string; content: string };
+
+export function splitSections(body: string): { preamble: string; sections: BodySection[] } {
+	let openFence: string | null = null;
+	const preambleLines: string[] = [];
+	const sections: { title: string; lines: string[] }[] = [];
+	let current: { title: string; lines: string[] } | null = null;
+	for (const line of body.split("\n")) {
+		const fence = FENCE_RE.exec(line);
+		if (openFence !== null) {
+			(current ? current.lines : preambleLines).push(line);
+			if (fence && fence[1][0] === openFence[0] && fence[1].length >= openFence.length && !fence[2].trim()) openFence = null;
+			continue;
+		}
+		if (fence) {
+			openFence = fence[1];
+			(current ? current.lines : preambleLines).push(line);
+			continue;
+		}
+		const heading = SECTION_HEADING_RE.exec(line);
+		if (heading) {
+			current = { title: heading[1].trim(), lines: [] };
+			sections.push(current);
+			continue;
+		}
+		(current ? current.lines : preambleLines).push(line);
+	}
+	return {
+		preamble: preambleLines.join("\n").trim(),
+		sections: sections.map((section) => ({ title: section.title, content: section.lines.join("\n").trim() })),
+	};
+}
+
+export function replaceSection(body: string, section: string, content: string): string {
+	const parsed = splitSections(body);
+	const trimmed = content.trim();
+	const idx = parsed.sections.findIndex((candidate) => candidate.title === section);
+	if (idx >= 0) parsed.sections[idx] = { title: section, content: trimmed };
+	else parsed.sections.push({ title: section, content: trimmed });
+	const parts: string[] = [];
+	if (parsed.preamble) parts.push(parsed.preamble);
+	for (const item of parsed.sections) {
+		parts.push(item.content ? `## ${item.title}\n\n${item.content}` : `## ${item.title}`);
+	}
+	return parts.join("\n\n") + "\n";
+}
+
+export function appendBody(existing: string, addition: string): string {
+	const trimmed = addition.trim();
+	if (!trimmed) return existing.trim() + "\n";
+	const base = existing.trim();
+	return base ? `${base}\n\n${trimmed}\n` : `${trimmed}\n`;
+}
 
 export function isRuleShaped(text: string): boolean {
 	return RULE_SHAPED.some((pattern) => pattern.test(text));
@@ -230,7 +289,21 @@ export class MemoryStore {
 		return top;
 	}
 
-	async save(name: string, description: string, type: string, body: string): Promise<SaveOutcome> {
+	async save(name: string, description: string, type: string, body: string, options: SaveOptions = {}): Promise<SaveOutcome> {
+		const mode = options.mode ?? "replace";
+		if (mode !== "replace" && mode !== "append") {
+			return { status: "rejected-lints", message: "mode 必须是 replace/append" };
+		}
+		let section: string | undefined;
+		if (options.section !== undefined) {
+			if (mode === "append") {
+				return { status: "rejected-lints", message: "section 与 mode=append 互斥:给 section 即小节级替换,不做整体追加" };
+			}
+			section = stripControlCodes(options.section).trim();
+			if (!section || section.length > SECTION_NAME_MAX_CHARS || section.includes("#")) {
+				return { status: "rejected-lints", message: `section 需为非空小节名(≤${SECTION_NAME_MAX_CHARS} 字符,不含 #),层级由工具补` };
+			}
+		}
 		if (type === "problem" || isRuleShaped(`${description}\n${body}`)) {
 			return { status: "rejected-lints", message: LINT_TEMPLATE };
 		}
@@ -266,11 +339,24 @@ export class MemoryStore {
 		const expiryAt = type === "project" ? new Date(Date.now() + PROJECT_TTL_MS).toISOString() : undefined;
 		const canonicalName = existing ? existing.name : name;
 		const canonicalFile = existing ? existing.file : `${name}.md`;
-		const entry: MemoryEntry = { name: canonicalName, description, type: type as MemoryType, file: canonicalFile, body, expiryAt };
+		let mergedBody = body;
+		let merged: "appended" | "section" | undefined;
+		if (existing) {
+			if (mode === "append") {
+				mergedBody = appendBody(existing.body, body);
+				merged = "appended";
+			} else if (section) {
+				mergedBody = replaceSection(existing.body, section, body);
+				merged = "section";
+			}
+		} else if (section) {
+			mergedBody = replaceSection("", section, body);
+		}
+		const entry: MemoryEntry = { name: canonicalName, description, type: type as MemoryType, file: canonicalFile, body: mergedBody, expiryAt };
 		await writeFile(join(this.root, entry.file), renderEntry(entry), "utf8");
 		this.entriesCache = null;
 		await this.rebuildIndex();
-		return { status: "saved", entry, updated: Boolean(existing) };
+		return { status: "saved", entry, updated: Boolean(existing), merged };
 	}
 
 	async findDuplicates(query: string, entries: MemoryEntry[], columns: string[] = ["name", "description", "body"]): Promise<SearchHit[]> {
@@ -375,28 +461,34 @@ export default async function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "memory_save",
 		label: "Memory Save",
-		description: "持久化一条跨会话记忆。判定性知识(看到 X 就 fail 的规则)禁止入内,会被分流到 lints/。",
-		promptSnippet: "跨会话记忆的查重新建/更新",
+		description: "持久化一条跨会话记忆。判定性知识(看到 X 就 fail 的规则)禁止入内,会被分流到 lints/。name 命中已有条目时支持增量更新:mode=append 追加段落,section 替换/新建命名小节;未命中则新建。",
+		promptSnippet: "跨会话记忆的查重新建/增量更新",
 		promptGuidelines: ["Use memory_save for durable cross-session facts and judgments; rules that can fail mechanically belong in lints/ instead."],
 		parameters: Type.Object({
 			name: Type.String({ description: "短 slug,kebab-case,作为文件名" }),
-			description: Type.String({ description: "一行钩子,进 MEMORY.md 索引" }),
+			description: Type.String({ description: "一行钩子,进 MEMORY.md 索引;命中已有条目时也会覆盖此字段" }),
 			type: StringEnum([...MEMORY_TYPES, "problem"] as const),
-			body: Type.String({ description: "正文全文" }),
+			body: Type.String({ description: "replace 模式为正文全文;append 模式为追加的段落;给了 section 则为该小节的新内容" }),
+			mode: Type.Optional(StringEnum(["replace", "append"] as const)),
+			section: Type.Optional(Type.String({ description: "命名小节(## 标题):存在则替换该节,不存在则尾插;与 mode=append 互斥" })),
 		}),
 		async execute(_toolCallId, params) {
-			const outcome = await store.save(params.name, params.description, params.type, params.body);
+			const outcome = await store.save(params.name, params.description, params.type, params.body, { mode: params.mode, section: params.section });
 			if (outcome.status === "rejected-lints") {
 				return { content: [{ type: "text", text: outcome.message }], details: { status: outcome.status }, isError: true };
 			}
 			if (outcome.status === "rejected-duplicate") {
-				const lines = ["疑似重复,拒绝新建。已有相近条目:", formatHits(outcome.hits), "要更新就在 memory_save 里用旧条目的 name 覆盖;确属新条目请改 name/description 后重试。"];
+				const lines = ["疑似重复,拒绝新建。已有相近条目:", formatHits(outcome.hits), "要更新就在 memory_save 里用旧条目的 name 覆盖(或 mode=append/section 增量);确属新条目请改 name/description 后重试。"];
 				return { content: [{ type: "text", text: lines.join("\n") }], details: { status: outcome.status, hits: outcome.hits.map((hit) => hit.entry.name) }, isError: true };
 			}
-			const verb = outcome.updated ? "updated" : "saved";
+			let verb: string;
+			if (!outcome.updated) verb = "saved";
+			else if (outcome.merged === "appended") verb = "appended to";
+			else if (outcome.merged === "section") verb = `updated section "${params.section}" of`;
+			else verb = "updated";
 			return {
 				content: [{ type: "text", text: `${verb} ${outcome.entry.name} (${outcome.entry.type});MEMORY.md 索引已重建` }],
-				details: { status: outcome.status, name: outcome.entry.name, file: outcome.entry.file },
+				details: { status: outcome.status, name: outcome.entry.name, file: outcome.entry.file, merged: outcome.merged ?? null },
 			};
 		},
 	});

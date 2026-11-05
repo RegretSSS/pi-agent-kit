@@ -71,3 +71,9 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D7-8 部署语义**:扩展部署 = prune 清单先行 + 全量 *.ts 拷贝;库文件(compact-instructions 类)一律内联进扩展文件,不落 pi 自动发现目录。理由:pi 加载器把目录内每个 .ts 当扩展,库文件会报"does not export a valid factory";排除名单曾使全新安装的 compact 静默失效(R3 实证),prune 先行防同名复发。
 
 - **D7-9 sidecar 快照改单属主文件(503f408 后为每实例一个)**:每实例只写 `sidecar.<pid>.<instanceId>.jsonl`(实例内 persistMu 互斥串行),读侧取 mtime 最新,2h 外清扫(含残留 .tmp);彻底放弃跨进程锁/双检/行数守卫三代协议(R3~R5 连续实证:POSIX 上多写者单调发布没有廉价正确原语——行数启发式把 GC 收缩变幽灵、锁+签名双检在 stall>10s 被抢占复活幽灵、锁获取在权限异常下 busy-spin 挂起)。残余边界:stall 场景旧快照可能成为 mtime 最新,幽灵仅在「db 已消失且无任何 db-backed refresh 自愈」同时发生时暴露——db 存在时 refresh 恒直读 db,该窗口即快照语义(最后已知状态)。
+
+## D9(memory_save 增量更新,FR1)
+
+- **D9-1 增量协议:mode=append / section 两参数正交**:mode=append 整体追加段落;给 section 即命名小节级替换(存在同名 `## ` 节则换内容,不存在则尾插),与 append 互斥;未命中 name 时增量模式降级新建(section 模式把 body 包装成单节结构)。查重闸仅挂新建路径(命中更新沿用跳过语义);description/type 命中时照旧总是覆盖——程序化调用方(pi-backend)重传原值零成本,不为"保留旧值"引入模式相关验证分歧;命中即清 archive_candidate 并对 project 重算 TTL(更新=条目重新活跃)。
+- **D9-2 小节边界围栏感知**:splitSections 逐行跑 CommonMark 围栏状态机(与 deploy.sh 同规则:同字符+长度≥+无 info string 闭合),fenced block 内的 `## ` 行不是小节边界——R3(deploy 围栏违背 CommonMark)教训前移到 memory 正文;测试钉住「块内同名假节不吃掉替换」。
+- **D9-3 前导空行往返 quirk 的增量路径规范化**:parseFrontmatter 的 slice 往返使读回 body 恒带一个前导 `\n`(存量行为,replace 模式下稳定无害);appendBody 若只 trimEnd 会让该前导随每次 append 复制累积(实测抓到),故统一 trim() 归一——合并路径(append/section)产出的 body 首尾空白都是工具管辖,原文模式不动调用者原文。

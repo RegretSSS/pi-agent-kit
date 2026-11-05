@@ -156,3 +156,103 @@ def test_context_index_capped_and_lossless_pointer(tmp_path) -> None:
     assert "memory_search" in out["rendered"]
     rows = [line for line in out["rendered"].split("\n") if line.startswith("- [")]
     assert len(rows) == 30
+
+
+def test_append_mode_merges_into_existing(tmp_path) -> None:
+    drive(tmp_path, "save", {"name": "bili-ops", "description": "压缩代理口径", "type": "reference", "body": "代理 127.0.0.1:18787"})
+    out = drive(tmp_path, "save", {"name": "bili-ops", "description": "压缩代理口径", "type": "reference", "body": "db 在 ~/.local/share/billion-context/", "mode": "append"})
+    assert out["outcome"]["status"] == "saved"
+    assert out["outcome"]["updated"] is True
+    assert out["outcome"]["merged"] == "appended"
+    body = drive(tmp_path, "read", {"name": "bili-ops"})["body"]
+    assert "127.0.0.1:18787" in body
+    assert "db 在 ~/.local/share/billion-context/" in body
+    assert body.index("18787") < body.index("billion-context")
+
+
+def test_append_on_missing_name_creates_with_dup_gate(tmp_path) -> None:
+    drive(tmp_path, "save", {"name": "bili-ops", "description": "压缩代理口径", "type": "reference", "body": "x"})
+    dup = drive(tmp_path, "save", {"name": "bili-ops-2", "description": "压缩代理口径补充", "type": "reference", "body": "y", "mode": "append"})
+    assert dup["outcome"]["status"] == "rejected-duplicate"
+    fresh = drive(tmp_path, "save", {"name": "magpie-ops", "description": "路由网关口径", "type": "reference", "body": "首段", "mode": "append"})
+    assert fresh["outcome"]["status"] == "saved"
+    assert fresh["outcome"]["updated"] is False
+    assert drive(tmp_path, "read", {"name": "magpie-ops"})["body"].strip() == "首段"
+
+
+def test_section_replace_and_add(tmp_path) -> None:
+    body = "前言行\n\n## 环境\n\n旧环境段\n\n## 排障\n\n排障段"
+    drive(tmp_path, "save", {"name": "bili-ops", "description": "压缩代理口径", "type": "reference", "body": body})
+    out = drive(tmp_path, "save", {"name": "bili-ops", "description": "压缩代理口径", "type": "reference", "body": "新环境段", "section": "环境"})
+    assert out["outcome"]["merged"] == "section"
+    merged = drive(tmp_path, "read", {"name": "bili-ops"})["body"]
+    assert "新环境段" in merged
+    assert "旧环境段" not in merged
+    assert "排障段" in merged
+    assert "前言行" in merged
+    added = drive(tmp_path, "save", {"name": "bili-ops", "description": "压缩代理口径", "type": "reference", "body": "全新小节段", "section": "升级"})
+    assert added["outcome"]["merged"] == "section"
+    merged = drive(tmp_path, "read", {"name": "bili-ops"})["body"]
+    assert "## 升级\n\n全新小节段" in merged
+    assert merged.index("升级") > merged.index("排障")
+
+
+def test_section_ignores_fenced_headings(tmp_path) -> None:
+    body = "```\n## 块内节\n不该被动\n```\n\n## 真节\n\n真节内容"
+    drive(tmp_path, "save", {"name": "deploy-notes", "description": "部署口径", "type": "reference", "body": body})
+    drive(tmp_path, "save", {"name": "deploy-notes", "description": "部署口径", "type": "reference", "body": "换新内容", "section": "真节"})
+    merged = drive(tmp_path, "read", {"name": "deploy-notes"})["body"]
+    assert "## 块内节" in merged
+    assert "不该被动" in merged
+    assert "换新内容" in merged
+    fenced = drive(tmp_path, "save", {"name": "deploy-notes", "description": "部署口径", "type": "reference", "body": "目标", "section": "块内节"})
+    assert fenced["outcome"]["status"] == "saved"
+    merged = drive(tmp_path, "read", {"name": "deploy-notes"})["body"]
+    assert "不该被动" in merged
+    assert "## 块内节\n\n目标" in merged
+
+
+def test_section_on_missing_name_creates_wrapped(tmp_path) -> None:
+    out = drive(tmp_path, "save", {"name": "new-entry", "description": "d", "type": "reference", "body": "首节内容", "section": "环境"})
+    assert out["outcome"]["status"] == "saved"
+    assert out["outcome"]["updated"] is False
+    body = drive(tmp_path, "read", {"name": "new-entry"})["body"]
+    assert body.strip() == "## 环境\n\n首节内容"
+
+
+def test_repeated_append_never_accumulates_blank_lines(tmp_path) -> None:
+    drive(tmp_path, "save", {"name": "bili-ops", "description": "d", "type": "reference", "body": "第1段"})
+    for i in range(4):
+        drive(tmp_path, "save", {"name": "bili-ops", "description": "d", "type": "reference", "body": f"第{i + 2}段", "mode": "append"})
+    body = drive(tmp_path, "read", {"name": "bili-ops"})["body"]
+    assert body.count("\n\n\n") == 0
+    assert all(f"第{i}段" in body for i in range(1, 6))
+
+
+def test_section_and_mode_validation(tmp_path) -> None:
+    conflict = drive(tmp_path, "save", {"name": "x-ops", "description": "d", "type": "reference", "body": "b", "mode": "append", "section": "s"})
+    assert conflict["outcome"]["status"] == "rejected-lints"
+    for bad in ["", "   ", "#标题", "a" * 65]:
+        rejected = drive(tmp_path, "save", {"name": "x-ops", "description": "d", "type": "reference", "body": "b", "section": bad})
+        assert rejected["outcome"]["status"] == "rejected-lints"
+    bad_mode = drive(tmp_path, "save", {"name": "x-ops", "description": "d", "type": "reference", "body": "b", "mode": "merge"})
+    assert bad_mode["outcome"]["status"] == "rejected-lints"
+    assert drive(tmp_path, "index")["entries"] == []
+
+
+def test_incremental_refreshes_index_description(tmp_path) -> None:
+    drive(tmp_path, "save", {"name": "bili-ops", "description": "旧钩子", "type": "reference", "body": "x"})
+    drive(tmp_path, "save", {"name": "bili-ops", "description": "新钩子", "type": "reference", "body": "y", "mode": "append"})
+    assert "- [bili-ops](bili-ops.md) — 新钩子" in (tmp_path / "MEMORY.md").read_text()
+
+
+def test_append_clears_archive_candidate_and_renews_ttl(tmp_path) -> None:
+    drive(tmp_path, "save", {"name": "eng-ops", "description": "项目口径", "type": "project", "body": "进行中"})
+    drive(tmp_path, "backdate", {"name": "eng-ops"})
+    assert drive(tmp_path, "archive-scan", {"name": "eng-ops", "lastReferenced": 0})["promoted"] == ["eng-ops"]
+    out = drive(tmp_path, "save", {"name": "eng-ops", "description": "项目口径", "type": "project", "body": "追加段", "mode": "append"})
+    assert out["outcome"]["status"] == "saved"
+    state = drive(tmp_path, "index")
+    entry = [e for e in state["entries"] if e["name"] == "eng-ops"][0]
+    assert entry["archiveCandidate"] is False
+    assert entry["expiryAt"] > "2026-"

@@ -5,7 +5,7 @@
 ## 采用的手段与措施
 
 - **问题即 lint**:每个踩过的坑固化成一条机械规则(13 条:结构约定 → pattern 源码扫描,行为语义 → behavioral 加载真模块重放原始失败输入),`pytest + run-lints.sh` 双 gate 全绿才允许提交
-- **memory 系统**:`node:sqlite` FTS5 trigram 中文全文检索、查重闸(规则腔分流到 lints)、热度 top-K 注入——system prompt 开销 O(1) 有界,磁盘索引全量保留
+- **memory 系统**:`node:sqlite` FTS5 trigram 中文全文检索、查重闸(规则腔分流到 lints)、增量更新(append 段落/命名小节替换,围栏感知)、热度 top-K 注入——system prompt 开销 O(1) 有界,磁盘索引全量保留
 - **tasks 后台任务**:append-only journal 单一真相、跨会话状态增量重放、pid 复用防护(`/proc` starttime)、owner 必收通知
 - **compact 工具**:模型在自然工作边界自主发起压缩,摘要强制携带 `<fold-index>` 索引头(单活代际链,蒸馏并集)
 - **history 跨会话检索**:检索 billion-context 的压缩块摘要(侧车快照降级、预算轮廓+关键词窗口钻取、会话歧义候选拒绝)
@@ -51,6 +51,6 @@ extensions/   pi 扩展(memory / tasks / compact-tool / history)
 lints/        机械规则(一规则一文件,run-lints.sh 自动发现)
 scripts/      run-lints / enable-gate / sync-mcp / quick-install
 skills/       subagent-workflows 编排引导
-tests/        74 项(pytest 驱动 node 直载 TS 模块)
+tests/        83 项(pytest 驱动 node 直载 TS 模块)
 DECISIONS.md  全部选型决策与接受边界
 ```

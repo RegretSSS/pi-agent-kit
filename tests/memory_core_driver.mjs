@@ -7,8 +7,15 @@ const out = {};
 switch (scenario) {
 	case "save": {
 		const p = JSON.parse(payload);
-		const outcome = await store.save(p.name, p.description, p.type, p.body);
-		out.outcome = { status: outcome.status, updated: outcome.updated ?? null, hits: outcome.hits?.map((h) => h.entry.name) ?? null, message: outcome.message?.slice(0, 200) ?? null };
+		const outcome = await store.save(p.name, p.description, p.type, p.body, { mode: p.mode, section: p.section });
+		out.outcome = { status: outcome.status, updated: outcome.updated ?? null, merged: outcome.merged ?? null, hits: outcome.hits?.map((h) => h.entry.name) ?? null, message: outcome.message?.slice(0, 200) ?? null };
+		break;
+	}
+	case "read": {
+		const p = JSON.parse(payload);
+		const entry = (await store.listEntries(true)).find((e) => e.name === p.name);
+		out.body = entry?.body ?? null;
+		out.archiveCandidate = entry?.archiveCandidate ?? false;
 		break;
 	}
 	case "search": {
