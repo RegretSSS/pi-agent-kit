@@ -102,3 +102,15 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D12-5 成本技巧与 SKILL §6 红线同源印证**:固定角色外提+resume 复用(SKILL §1/§10);纯搬运角色用廉价模型;热修迭代 prompt 一字不动=缓存全命中(=§6「常量别插进 prompt」);信在途绝不 amend(=§6「run 必须先停」)——zcode 的 D6 判断层与本仓红线出自同一实战谱系。
 
 - **D12-6 jiti 缓存掩盖 src 级语法错(slim 三连修)**:wire 换用新常量却未补 import、模板串内层反引号未转义——两个错自 b7a8409 起共存,但 jiti 旧编译缓存一直在跑 full 版,直到缓存被身份手术清空才爆「is not defined / Unterminated template」。修复:import 补第五注入点;DESC_SLIM_EXPORT 重写为双引号数组 join(内层零反引号,免疫转义)。教训:「磁盘已验标记存在」≠「能编译」,patch 后必须清缓存+实载验证(报错才算修完);gate 链式中 `;` 后的 commit 会逃逸失败检查,pipefail 链必须全 && 到底。
+
+## D13(queue-watch 复刻 + mailbox 收发链修复)
+
+- **D13-1 守望层两档制**:纯日志触发行扫描(hub.log tail)不进 workflow——守窗 agent resume:'watch' 跨窗复用(等价 zcode hoist),行协议 EXIT=/NEW_TOTAL=/中段 matched 定序锚定(防协议换行把 EXIT 值断成两行);偏移 ack 原子写(tmp+mv);LINE_ANCHOR 时间戳行锚防 prose 内触发词误报(喂探针自解被其杀死)。五条纪律与安全边界照 D12-3/4。
+- **D13-2 pi-backend 守望降级按需**:用户裁定其主线压力大,守望改为一次性任务数安静窗的按需模板,不布常驻。
+
+## D14(workflow run 管理五通道,用户「pi 还是没有 stop 工具」)
+
+- **D14-1 停止通道源码实证**:注册表= index.ts factory 作用域 `workflowTasks: Map<string, WorkflowTask>`(session 级,shutdown 清空);UI 菜单 stop 语义= `task.abortController.abort()`(先查 signal.aborted 幂等护栏),abort 同时杀 worker 与子 agent(host 每次spawn 透传 signal,manager onParentAbort 级联);killed 后 Map 条目留存,resolveResumeTarget 支持 scriptPath+resumeFromRunId 续跑(journal 回放)。
+- **D14-2 五通道设计**:workflow_list(全部 run 摘要,cached 计数器零推导——fleet list 200ms tick 同款纪律)/workflow_stop(幂等,已 abort 返回 {stopped:false,status})/workflow_pause/workflow_resume(pauseWorkflowTask/resumeWorkflowTask 直用,UI 同源,状态机错 throw)/workflow_status(单 run 详情,collapse() 出 agent 状态行+logs 尾;P1 的 log_tail 并入其 lines 参数,默认 20 上限 200)。P2 的 run 内 steer/skip/retry 留上游 #433 讨论(control 句柄有,索引语义需对齐)。
+- **D14-3 注入点锚点存活不变量(新 lint patch_replacement_reanchors)**:wf-deps 与 rpc-deps 共用 `manager: SpawnCapable;\n}` interface 尾巴——后打者必须保持前打者锚点子串完整(replacement ⊇ anchor 或 ⊇ marker)。lint 用 node 求值 mjs 头部 const 实参(模板插值/数组 join/拼接全解),对每个 patchFile 调用检查;防「已 patch 机器上后继注入锚点失配」这一静默失效模式。
+- **D14-4 工具层测试用 typebox 替身**:repo 无可解析 typebox 安装(extension 靠 pi 运行时解析裸 specifier),driver 以镜像所用表面(Object/String/Number/Boolean/Optional)的替身注册工具——被测对象是 execute 逻辑与格式化,非 schema 发射。
