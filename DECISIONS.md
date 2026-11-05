@@ -77,3 +77,11 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D9-1 增量协议:mode=append / section 两参数正交**:mode=append 整体追加段落;给 section 即命名小节级替换(存在同名 `## ` 节则换内容,不存在则尾插),与 append 互斥;未命中 name 时增量模式降级新建(section 模式把 body 包装成单节结构)。查重闸仅挂新建路径(命中更新沿用跳过语义);description/type 命中时照旧总是覆盖——程序化调用方(pi-backend)重传原值零成本,不为"保留旧值"引入模式相关验证分歧;命中即清 archive_candidate 并对 project 重算 TTL(更新=条目重新活跃)。
 - **D9-2 小节边界围栏感知**:splitSections 逐行跑 CommonMark 围栏状态机(与 deploy.sh 同规则:同字符+长度≥+无 info string 闭合),fenced block 内的 `## ` 行不是小节边界——R3(deploy 围栏违背 CommonMark)教训前移到 memory 正文;测试钉住「块内同名假节不吃掉替换」。
 - **D9-3 前导空行往返 quirk 的增量路径规范化**:parseFrontmatter 的 slice 往返使读回 body 恒带一个前导 `\n`(存量行为,replace 模式下稳定无害);appendBody 若只 trimEnd 会让该前导随每次 append 复制累积(实测抓到),故统一 trim() 归一——合并路径(append/section)产出的 body 首尾空白都是工具管辖,原文模式不动调用者原文。
+
+## D10(context-gauge 水位可见性,FR4)
+
+- **D10-1 水位=常态可见的仪表盘而非越线告警**:每回合第一个工具结果后附加一行短水位(正常档仅 `[ctx 62% 124k/200k]`),75%/90% 档同行升级为行动信号文案——仪表盘与哨兵合一为单机制。理由:模型自主择时压缩(compact 哲学)的最佳边界常在 50~70%,越线才告警已过最佳时机;自查工具被否决(自动可见后主动查询需求趋零,且 /reload 不刷新会话内工具 schema)。
+- **D10-2 附加通道=tool_result 事件改写(零缓存损失、零额外条目)**:改写发生在工具结果入上下文之前,持久化的即改写后版本,下请求直接命中缓存;水位行随工具结果同生命周期,compact 折叠时一并被压——累积自限于单个压缩周期。排除的形态:水位值进 system prompt 尾节(pi-ai 断点在最后一条 user/system 消息,system 是头部块,任何变化打碎全部缓存前缀);followUp 注入(纯追加,可行但产生独立对话条目且常态注入会累积);context_edit 滚动替换(每回合编辑中部条目打碎上一回合后缀缓存)。
+- **D10-3 附加节流**:turn_start 重置,仅本回合首个非错误工具结果附加(并行批不重复);isError 结果跳过(错误输出保持干净,水位不应被误读为错误的一部分);getContextUsage().tokens 为 null(压缩后未获响应)不附加。structuredContent 改写 content 时原样回传(否则被丢弃)。TUI 场景 footer setStatus 常显精确水位,零上下文成本。
+- **D10-4 bili 压缩基线不入水位行**:blocks 表 session_id 与 pi 会话无映射,全局 active 块合计对当前会话决策是误导;水位行只给 pi 侧三件套(百分比/占用/窗口)。
+- **D10-5 /reload 刷新事件处理器但不刷新会话内工具 schema**(pi-backend 实测):a2a-inbox triggerTurn 行为 reload 即生效 vs memory_save 新参数 reload 后仍为旧 4 参数冻结。交付回执必须注明生效条件(事件侧=reload,工具侧=会话重启)。
