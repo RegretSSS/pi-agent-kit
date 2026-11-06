@@ -114,3 +114,11 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D14-2 五通道设计**:workflow_list(全部 run 摘要,cached 计数器零推导——fleet list 200ms tick 同款纪律)/workflow_stop(幂等,已 abort 返回 {stopped:false,status})/workflow_pause/workflow_resume(pauseWorkflowTask/resumeWorkflowTask 直用,UI 同源,状态机错 throw)/workflow_status(单 run 详情,collapse() 出 agent 状态行+logs 尾;P1 的 log_tail 并入其 lines 参数,默认 20 上限 200)。P2 的 run 内 steer/skip/retry 留上游 #433 讨论(control 句柄有,索引语义需对齐)。
 - **D14-3 注入点锚点存活不变量(新 lint patch_replacement_reanchors)**:wf-deps 与 rpc-deps 共用 `manager: SpawnCapable;\n}` interface 尾巴——后打者必须保持前打者锚点子串完整(replacement ⊇ anchor 或 ⊇ marker)。lint 用 node 求值 mjs 头部 const 实参(模板插值/数组 join/拼接全解),对每个 patchFile 调用检查;防「已 patch 机器上后继注入锚点失配」这一静默失效模式。
 - **D14-4 工具层测试用 typebox 替身**:repo 无可解析 typebox 安装(extension 靠 pi 运行时解析裸 specifier),driver 以镜像所用表面(Object/String/Number/Boolean/Optional)的替身注册工具——被测对象是 execute 逻辑与格式化,非 schema 发射。
+
+## D15(memory 双桶 scoped + 设定全局适配,用户"新项目 pi 没继承设定/记忆混桶")
+
+- **D15-1 项目桶映射模仿 CC**:~/.agents/memory/projects/<cwd 非[a-zA-Z0-9]全替->/(项目私有记忆不进项目仓——用户约束);全局桶 ~/.agents/memory/ 原地不动,存量零迁移。pi 全局根即 ~/.agents(skills 同根实证),CC 同构 ~/.claude/projects/<encoded>/。
+- **D15-2 写入语义**:memory_save 加 scope 参数默认 project;global 准入闸=type=project 拒绝(项目认知不进全局桶)+"真正重要跨项目才 global、偶尔使用"进工具 description 引导。查重限同桶(跨桶同名是合法副本)。
+- **D15-3 读取无感混搜**:默认两桶各搜合并按 termsHit 排序取 top_k(不传参=无感——用户规格),scope 参数才限定;ScopedHit 带 [project]/[global] 来源标与真实路径;context 注入两桶按引用热度合并 top-30。
+- **D15-4 设定继承链实证**:pi 读 agentDir(~/.pi/agent)下 AGENTS.md/CLAUDE.md 为全局 context+逐级祖先目录(缺省无全局文件→通用约定无载体);skills 双轨全局 ~/.agents/skills+项目 .agents/skills(trust 后);扩展/模型/settings 本就全局。补 ~/.pi/agent/AGENTS.md 四节通用约定(记忆/workflow opt-in/tmux 绝对路径/mailbox 纪律)。
+- **D15-5 已知存量缺口(记档不动)**:splitTerms 过滤 <3 字符词(与 FTS trigram 对齐),2 字中文词两桶都搜不到;兜底 countTermHits 依赖同一 terms 数组故不救。
