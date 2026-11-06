@@ -20,6 +20,10 @@ const DESCRIPTION_MAX_CHARS = 300;
 export function normalizeName(name: string): string {
 	return name.toLowerCase().normalize("NFC");
 }
+
+export function projectMemoryRoot(cwd: string, globalRoot: string = join(homedir(), ".agents", "memory")): string {
+	return join(globalRoot, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+}
 const LINT_TEMPLATE = [
 	"这条是判定性知识(可写成「看到 X 就 fail」),不该进 memory。分流去 lints/:",
 	"1. 在所在仓新建 lints/<rule_name>.py,一规则一文件,接入 scripts/run-lints.sh",
@@ -42,7 +46,11 @@ export type MemoryEntry = {
 
 export type SearchHit = { entry: MemoryEntry; termsHit: number };
 
-export type SaveOptions = { mode?: "replace" | "append"; section?: string };
+export type MemoryScope = "global" | "project";
+
+export type ScopedHit = SearchHit & { scope: MemoryScope; root: string };
+
+export type SaveOptions = { mode?: "replace" | "append"; section?: string; scope?: MemoryScope };
 
 export type SaveOutcome =
 	| { status: "saved"; entry: MemoryEntry; updated: boolean; merged?: "appended" | "section" }
@@ -379,6 +387,19 @@ export class MemoryStore {
 		for (const name of names) upsert.run(name, now);
 	}
 
+	lastReferencedMap(): Map<string, number> {
+		const rows = this.open().prepare("SELECT name, last_referenced FROM memory_refs").all() as RefRow[];
+		return new Map(rows.map((row) => [row.name, row.last_referenced]));
+	}
+
+	async exists(): Promise<boolean> {
+		try {
+			return (await stat(this.root)).isDirectory();
+		} catch {
+			return false;
+		}
+	}
+
 	async scanArchiveCandidates(): Promise<MemoryEntry[]> {
 		const db = this.open();
 		const now = Date.now();
@@ -441,19 +462,97 @@ export class MemoryStore {
 	}
 }
 
-function formatHits(hits: SearchHit[]): string {
+function formatHits(hits: ScopedHit[]): string {
 	return hits
 		.map((hit, i) => {
 			const preview = stripControlCodes(hit.entry.body.slice(0, BODY_PREVIEW_CHARS).replace(/\s+/g, " "));
-			return `${i + 1}. [${hit.entry.type}] ${hit.entry.name} — ${hit.entry.description}\n   path: ~/.agents/memory/${hit.entry.file}\n   ${preview}`;
+			return `${i + 1}. [${hit.scope}] [${hit.entry.type}] ${hit.entry.name} — ${hit.entry.description}\n   path: ${join(hit.root, hit.entry.file)}\n   ${preview}`;
 		})
 		.join("\n");
+}
+
+export class ScopedMemory {
+	readonly global: MemoryStore;
+	readonly project: MemoryStore;
+
+	constructor(globalRoot?: string, projectRoot?: string) {
+		this.global = new MemoryStore(globalRoot);
+		this.project = new MemoryStore(projectRoot ?? projectMemoryRoot(process.cwd(), this.global.root));
+	}
+
+	private storeFor(scope: MemoryScope): MemoryStore {
+		return scope === "global" ? this.global : this.project;
+	}
+
+	private async scopedHits(store: MemoryStore, scope: MemoryScope, hits: SearchHit[]): Promise<ScopedHit[]> {
+		return hits.map((hit) => ({ ...hit, scope, root: store.root }));
+	}
+
+	async save(name: string, description: string, type: string, body: string, options: SaveOptions = {}): Promise<SaveOutcome> {
+		const scope = options.scope ?? "project";
+		if (scope === "global" && type === "project") {
+			return { status: "rejected-lints", message: "全局桶只收跨项目通用知识(user/feedback/reference);这条是项目相关认知——用 scope=project 保存,或它确实是通用判断则改 type 后重试" };
+		}
+		return this.storeFor(scope).save(name, description, type, body, options);
+	}
+
+	async search(query: string, topK: number, scope?: MemoryScope): Promise<ScopedHit[]> {
+		if (scope !== undefined) {
+			const store = this.storeFor(scope);
+			if (!(await store.exists())) return [];
+			return this.scopedHits(store, scope, await store.search(query, topK));
+		}
+		const [globalHits, projectHits] = await Promise.all([
+			this.global.search(query, topK),
+			this.project.exists().then((ok) => (ok ? this.project.search(query, topK) : Promise.resolve([] as SearchHit[]))),
+		]);
+		const merged = [
+			...(await this.scopedHits(this.global, "global", globalHits)),
+			...(await this.scopedHits(this.project, "project", projectHits)),
+		];
+		merged.sort((a, b) => b.termsHit - a.termsHit || a.entry.name.localeCompare(b.entry.name));
+		return merged.slice(0, topK);
+	}
+
+	async sessionMaintenance(): Promise<MemoryEntry[]> {
+		await this.global.rebuildIndex();
+		const promotedGlobal = await this.global.scanArchiveCandidates();
+		if (!(await this.project.exists())) return promotedGlobal;
+		await this.project.rebuildIndex();
+		return [...promotedGlobal, ...(await this.project.scanArchiveCandidates())];
+	}
+
+	async mergedContextText(): Promise<string | null> {
+		const globalEntries = await this.global.listEntries();
+		const projectEntries = (await this.project.exists()) ? await this.project.listEntries() : [];
+		if (globalEntries.length === 0 && projectEntries.length === 0) return null;
+		const [globalRefs, projectRefs] = [this.global.lastReferencedMap(), this.project.lastReferencedMap()];
+		const rows = [
+			...globalEntries.map((entry) => ({ entry, scope: "global" as MemoryScope, ref: globalRefs.get(entry.name) ?? 0 })),
+			...projectEntries.map((entry) => ({ entry, scope: "project" as MemoryScope, ref: projectRefs.get(entry.name) ?? 0 })),
+		];
+		rows.sort((a, b) => b.ref - a.ref || a.entry.name.localeCompare(b.entry.name));
+		const shown = rows.slice(0, CONTEXT_TOP_K);
+		const lines = shown.map((row) => `- [${row.scope}] [${row.entry.type}] ${row.entry.name} — ${row.entry.description}`);
+		if (rows.length > shown.length) lines.push(`(其余 ${rows.length - shown.length} 条略,用 memory_search 检索)`);
+		const header = `持久跨会话记忆可用(全局 ${globalEntries.length} 条 + 本项目 ${projectEntries.length} 条,按引用热度取前 ${shown.length});未列出条目与正文用 memory_search 混合检索,不要凭空假设没有。`;
+		return [header, "", ...lines].join("\n");
+	}
+
+	close(): void {
+		this.global.close();
+		this.project.close();
+	}
 }
 
 export default async function (pi: ExtensionAPI) {
 	const { Type } = await import("typebox");
 	const { StringEnum } = await import("@earendil-works/pi-ai");
-	const store = new MemoryStore();
+	let scoped: ScopedMemory | null = null;
+	const memory = (cwd: string): ScopedMemory => {
+		if (!scoped) scoped = new ScopedMemory(undefined, projectMemoryRoot(cwd));
+		return scoped;
+	};
 	let toolErrors: { tool: string; message: string }[] = [];
 	let tokensIn = 0;
 	let tokensOut = 0;
@@ -461,19 +560,20 @@ export default async function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "memory_save",
 		label: "Memory Save",
-		description: "持久化一条跨会话记忆。判定性知识(看到 X 就 fail 的规则)禁止入内,会被分流到 lints/。name 命中已有条目时支持增量更新:mode=append 追加段落,section 替换/新建命名小节;未命中则新建。",
+		description: "持久化一条跨会话记忆,scope=project 存本项目私有记忆(默认,与全局隔离),scope=global 存跨项目通用知识(仅真正重要、别的项目也会用到的才进——偶尔使用)。判定性知识(看到 X 就 fail 的规则)禁止入内,会被分流到 lints/。name 命中同桶已有条目时支持增量更新:mode=append 追加段落,section 替换/新建命名小节;未命中则新建。",
 		promptSnippet: "跨会话记忆的查重新建/增量更新",
-		promptGuidelines: ["Use memory_save for durable cross-session facts and judgments; rules that can fail mechanically belong in lints/ instead."],
+		promptGuidelines: ["Use memory_save for durable cross-session facts and judgments; rules that can fail mechanically belong in lints/ instead.", "Default scope is project-private; only occasionally promote truly important cross-project knowledge to scope=global."],
 		parameters: Type.Object({
 			name: Type.String({ description: "短 slug,kebab-case,作为文件名" }),
-			description: Type.String({ description: "一行钩子,进 MEMORY.md 索引;命中已有条目时也会覆盖此字段" }),
+			description: Type.String({ description: "一行钩子,进所属桶的 MEMORY.md 索引;命中已有条目时也会覆盖此字段" }),
 			type: StringEnum([...MEMORY_TYPES, "problem"] as const),
 			body: Type.String({ description: "replace 模式为正文全文;append 模式为追加的段落;给了 section 则为该小节的新内容" }),
 			mode: Type.Optional(StringEnum(["replace", "append"] as const)),
 			section: Type.Optional(Type.String({ description: "命名小节(## 标题):存在则替换该节,不存在则尾插;与 mode=append 互斥" })),
+			scope: Type.Optional(StringEnum(["project", "global"] as const, { description: "默认 project(本项目私有);global 仅收跨项目通用知识" })),
 		}),
-		async execute(_toolCallId, params) {
-			const outcome = await store.save(params.name, params.description, params.type, params.body, { mode: params.mode, section: params.section });
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const outcome = await memory(ctx.cwd).save(params.name, params.description, params.type, params.body, { mode: params.mode, section: params.section, scope: params.scope });
 			if (outcome.status === "rejected-lints") {
 				return { content: [{ type: "text", text: outcome.message }], details: { status: outcome.status }, isError: true };
 			}
@@ -486,9 +586,10 @@ export default async function (pi: ExtensionAPI) {
 			else if (outcome.merged === "appended") verb = "appended to";
 			else if (outcome.merged === "section") verb = `updated section "${params.section}" of`;
 			else verb = "updated";
+			const scope = params.scope ?? "project";
 			return {
-				content: [{ type: "text", text: `${verb} ${outcome.entry.name} (${outcome.entry.type});MEMORY.md 索引已重建` }],
-				details: { status: outcome.status, name: outcome.entry.name, file: outcome.entry.file, merged: outcome.merged ?? null },
+				content: [{ type: "text", text: `${verb} ${outcome.entry.name} (${outcome.entry.type}, ${scope});索引已重建` }],
+				details: { status: outcome.status, name: outcome.entry.name, file: outcome.entry.file, scope, merged: outcome.merged ?? null },
 			};
 		},
 	});
@@ -496,32 +597,33 @@ export default async function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "memory_search",
 		label: "Memory Search",
-		description: "FTS5 trigram 全文检索跨会话记忆,中文/子串友好,返回 top_k 条。",
+		description: "FTS5 trigram 全文检索跨会话记忆,中文/子串友好,返回 top_k 条。默认无感混合检索本项目私有记忆与全局通用记忆(结果带 [project]/[global] 来源标);传 scope 才限定单桶。",
 		promptSnippet: "跨会话记忆检索",
 		promptGuidelines: ["Use memory_search before re-deriving facts that earlier sessions may have memorized."],
 		parameters: Type.Object({
 			query: Type.String({ description: "检索词,中文或英文" }),
 			top_k: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
+			scope: Type.Optional(StringEnum(["project", "global"] as const, { description: "缺省=两桶混合;project=仅本项目私有记忆,global=仅全局通用记忆" })),
 		}),
-		async execute(_toolCallId, params) {
-			const hits = await store.search(params.query, params.top_k ?? 5);
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const hits = await memory(ctx.cwd).search(params.query, params.top_k ?? 5, params.scope);
 			if (hits.length === 0) {
-				return { content: [{ type: "text", text: "无命中" }], details: { hits: [] } };
+				return { content: [{ type: "text", text: params.scope ? `无命中(scope=${params.scope})` : "无命中(两桶)" }], details: { hits: [] } };
 			}
-			return { content: [{ type: "text", text: formatHits(hits) }], details: { hits: hits.map((hit) => hit.entry.name) } };
+			return { content: [{ type: "text", text: formatHits(hits) }], details: { hits: hits.map((hit) => ({ name: hit.entry.name, scope: hit.scope })) } };
 		},
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		await store.rebuildIndex();
-		const promoted = await store.scanArchiveCandidates();
+		scoped = new ScopedMemory(undefined, projectMemoryRoot(ctx.cwd));
+		const promoted = await scoped.sessionMaintenance();
 		if (promoted.length > 0 && ctx.hasUI) {
 			ctx.ui.notify(`memory: ${promoted.length} 条过期未引用条目标为归档候选`, "info");
 		}
 	});
 
 	pi.on("before_agent_start", async (event) => {
-		const index = await store.contextIndexText();
+		const index = await scoped?.mergedContextText();
 		if (!index) return;
 		event.systemPromptOptions.sections["agent-memory-index"] = index;
 	});
@@ -552,10 +654,11 @@ export default async function (pi: ExtensionAPI) {
 		toolErrors = [];
 		tokensIn = 0;
 		tokensOut = 0;
-		await store.appendCandidateRecord(record);
+		await scoped.global.appendCandidateRecord(record);
 	});
 
 	pi.on("session_shutdown", async () => {
-		store.close();
+		scoped?.close();
+		scoped = null;
 	});
 }

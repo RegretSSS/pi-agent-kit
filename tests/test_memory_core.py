@@ -256,3 +256,55 @@ def test_append_clears_archive_candidate_and_renews_ttl(tmp_path) -> None:
     entry = [e for e in state["entries"] if e["name"] == "eng-ops"][0]
     assert entry["archiveCandidate"] is False
     assert entry["expiryAt"] > "2026-"
+
+
+def test_project_root_encoding(tmp_path) -> None:
+    out = drive(tmp_path, "project-root", {"cwd": "/home/remedy/workspace/aicontest-clinical-note"})
+    assert out["root"] == str(tmp_path / "projects" / "-home-remedy-workspace-aicontest-clinical-note")
+    weird = drive(tmp_path, "project-root", {"cwd": "/mnt/d/000-自制软件/建筑信源"})
+    assert weird["root"].endswith("-mnt-d-000----------")
+
+
+def test_scoped_save_routes_and_gates(tmp_path) -> None:
+    project_root = tmp_path / "projects" / "-w-proj"
+    out = drive(tmp_path, "scoped", {"action": "save", "projectRoot": str(project_root), "name": "deploy-port", "description": "本仓部署端口", "type": "project", "body": "端口 8899"})
+    assert out["outcome"]["status"] == "saved"
+    assert (project_root / "deploy-port.md").exists() and not (tmp_path / "deploy-port.md").exists()
+    out = drive(tmp_path, "scoped", {"action": "save", "projectRoot": str(project_root), "name": "aliyun-cli", "description": "阿里云 cli 运维口径", "type": "reference", "body": "profile=claude-admin", "scope": "global"})
+    assert out["outcome"]["status"] == "saved"
+    assert (tmp_path / "aliyun-cli.md").exists() and not (project_root / "aliyun-cli.md").exists()
+    rejected = drive(tmp_path, "scoped", {"action": "save", "projectRoot": str(project_root), "name": "proj-only", "description": "项目认知", "type": "project", "body": "x", "scope": "global"})
+    assert rejected["outcome"]["status"] == "rejected-lints"
+    assert "scope=project" in rejected["outcome"]["message"]
+
+
+def test_scoped_search_mixed_and_scoped(tmp_path) -> None:
+    project_root = tmp_path / "projects" / "-w-proj"
+    drive(tmp_path, "scoped", {"action": "save", "projectRoot": str(project_root), "name": "aliyun-cli", "description": "阿里云 cli 运维口径", "type": "reference", "body": "profile=claude-admin", "scope": "global"})
+    drive(tmp_path, "scoped", {"action": "save", "projectRoot": str(project_root), "name": "deploy-port", "description": "本仓部署端口", "type": "project", "body": "端口 8899"})
+    mixed = drive(tmp_path, "scoped", {"action": "search", "projectRoot": str(project_root), "query": "部署端口 阿里云"})
+    scopes = {h["name"]: h["scope"] for h in mixed["hits"]}
+    assert scopes.get("deploy-port") == "project"
+    assert scopes.get("aliyun-cli") == "global"
+    only_project = drive(tmp_path, "scoped", {"action": "search", "projectRoot": str(project_root), "query": "部署端口", "scope": "project"})
+    assert [h["name"] for h in only_project["hits"]] == ["deploy-port"]
+    only_global = drive(tmp_path, "scoped", {"action": "search", "projectRoot": str(project_root), "query": "部署端口 阿里云", "scope": "global"})
+    assert [h["name"] for h in only_global["hits"]] == ["aliyun-cli"]
+
+
+def test_scoped_search_empty_project_bucket(tmp_path) -> None:
+    project_root = tmp_path / "projects" / "-w-other"
+    drive(tmp_path, "save", {"name": "aliyun-cli", "description": "阿里云 cli 运维口径", "type": "reference", "body": "x"})
+    out = drive(tmp_path, "scoped", {"action": "search", "projectRoot": str(project_root), "query": "阿里云"})
+    assert [h["name"] for h in out["hits"]] == ["aliyun-cli"]
+    assert not project_root.exists()
+
+
+def test_merged_context_labels(tmp_path) -> None:
+    project_root = tmp_path / "projects" / "-w-proj"
+    drive(tmp_path, "scoped", {"action": "save", "projectRoot": str(project_root), "name": "aliyun-cli", "description": "阿里云 cli 运维口径", "type": "reference", "body": "x", "scope": "global"})
+    drive(tmp_path, "scoped", {"action": "save", "projectRoot": str(project_root), "name": "deploy-port", "description": "本仓部署端口", "type": "project", "body": "y"})
+    out = drive(tmp_path, "scoped", {"action": "context", "projectRoot": str(project_root)})
+    assert "全局 1 条 + 本项目 1 条" in out["text"]
+    assert "- [global] [reference] aliyun-cli" in out["text"]
+    assert "- [project] [project] deploy-port" in out["text"]

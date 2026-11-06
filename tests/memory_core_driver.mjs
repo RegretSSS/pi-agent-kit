@@ -1,4 +1,4 @@
-import { MemoryStore } from "../extensions/memory.ts";
+import { MemoryStore, ScopedMemory, projectMemoryRoot } from "../extensions/memory.ts";
 
 const [root, scenario, payload] = process.argv.slice(2);
 const store = new MemoryStore(root);
@@ -63,6 +63,29 @@ switch (scenario) {
 		await store.appendCandidateRecord({ after: "rotate" });
 		out.rotated = (await fsp.stat(`${root}/.candidates.jsonl.1`)).size > 5 * 1024 * 1024;
 		out.fresh = await fsp.readFile(`${root}/.candidates.jsonl`, "utf8");
+		break;
+	}
+	case "project-root": {
+		const p = JSON.parse(payload);
+		out.root = projectMemoryRoot(p.cwd, p.globalRoot ?? root);
+		break;
+	}
+	case "scoped": {
+		const p = JSON.parse(payload);
+		const mem = new ScopedMemory(root, p.projectRoot);
+		if (p.action === "save") {
+			const outcome = await mem.save(p.name, p.description, p.type, p.body, { scope: p.scope });
+			out.outcome = { status: outcome.status, message: outcome.message?.slice(0, 200) ?? null };
+		} else if (p.action === "search") {
+			const hits = await mem.search(p.query, p.top_k ?? 5, p.scope);
+			out.hits = hits.map((h) => ({ name: h.entry.name, scope: h.scope, root: h.root, termsHit: h.termsHit }));
+			out.text = hits.map((h, i) => `${i + 1}. [${h.scope}] ${h.entry.name} @ ${h.root}`).join("\n");
+		} else if (p.action === "context") {
+			out.text = await mem.mergedContextText();
+		} else if (p.action === "maintenance") {
+			out.promoted = (await mem.sessionMaintenance()).map((e) => e.name);
+		}
+		mem.close();
 		break;
 	}
 	default:
