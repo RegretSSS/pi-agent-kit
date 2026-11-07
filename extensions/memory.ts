@@ -387,7 +387,8 @@ export class MemoryStore {
 		for (const name of names) upsert.run(name, now);
 	}
 
-	lastReferencedMap(): Map<string, number> {
+	async lastReferencedMap(): Promise<Map<string, number>> {
+		if (!(await this.exists())) return new Map();
 		const rows = this.open().prepare("SELECT name, last_referenced FROM memory_refs").all() as RefRow[];
 		return new Map(rows.map((row) => [row.name, row.last_referenced]));
 	}
@@ -526,7 +527,7 @@ export class ScopedMemory {
 		const globalEntries = await this.global.listEntries();
 		const projectEntries = (await this.project.exists()) ? await this.project.listEntries() : [];
 		if (globalEntries.length === 0 && projectEntries.length === 0) return null;
-		const [globalRefs, projectRefs] = [this.global.lastReferencedMap(), this.project.lastReferencedMap()];
+		const [globalRefs, projectRefs] = await Promise.all([this.global.lastReferencedMap(), this.project.lastReferencedMap()]);
 		const rows = [
 			...globalEntries.map((entry) => ({ entry, scope: "global" as MemoryScope, ref: globalRefs.get(entry.name) ?? 0 })),
 			...projectEntries.map((entry) => ({ entry, scope: "project" as MemoryScope, ref: projectRefs.get(entry.name) ?? 0 })),

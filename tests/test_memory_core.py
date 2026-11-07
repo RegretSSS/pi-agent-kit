@@ -308,3 +308,12 @@ def test_merged_context_labels(tmp_path) -> None:
     assert "全局 1 条 + 本项目 1 条" in out["text"]
     assert "- [global] [reference] aliyun-cli" in out["text"]
     assert "- [project] [project] deploy-port" in out["text"]
+
+
+def test_merged_context_missing_project_bucket_no_throw(tmp_path) -> None:
+    drive(tmp_path, "save", {"name": "g1", "description": "全局条目", "type": "reference", "body": "x"})
+    missing = tmp_path / "projects" / "-w-aicontest"
+    out = drive(tmp_path, "scoped", {"action": "context", "projectRoot": str(missing)})
+    assert "全局 1 条 + 本项目 0 条" in out["text"]
+    assert "- [global] [reference] g1" in out["text"]
+    assert not missing.exists()
