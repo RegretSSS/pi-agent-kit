@@ -122,3 +122,9 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D15-3 读取无感混搜**:默认两桶各搜合并按 termsHit 排序取 top_k(不传参=无感——用户规格),scope 参数才限定;ScopedHit 带 [project]/[global] 来源标与真实路径;context 注入两桶按引用热度合并 top-30。
 - **D15-4 设定继承链实证**:pi 读 agentDir(~/.pi/agent)下 AGENTS.md/CLAUDE.md 为全局 context+逐级祖先目录(缺省无全局文件→通用约定无载体);skills 双轨全局 ~/.agents/skills+项目 .agents/skills(trust 后);扩展/模型/settings 本就全局。补 ~/.pi/agent/AGENTS.md 四节通用约定(记忆/workflow opt-in/tmux 绝对路径/mailbox 纪律)。
 - **D15-5 已知存量缺口(记档不动)**:splitTerms 过滤 <3 字符词(与 FTS trigram 对齐),2 字中文词两桶都搜不到;兜底 countTermHits 依赖同一 terms 数组故不救。
+
+## D16(a2a-inbox 11-07 崩溃事故吸收,A2A 工单)
+
+- **D16-1 三坑源码实证(pi-coding-agent 1.5.0)**:①ExtensionAPI 层 sendUserMessage(agent-session.js:2792)fire-and-forget 无 return,.then 即 TypeError;类型面双定义(session 层 1928 行才是 Promise<void>)。②prompt() 1670 行 `isStreaming ? streamingBehavior : undefined`——idle 时该选项整体被忽略走正常提交(唤醒),streaming 中缺省则 1684 行同步 throw(加载期遗留信撞未就绪运行时=PI_EXIT 循环)。③followUp 两级队列恒劣后用户手打字,长回合信饿死。
+- **D16-2 终版形态(sendUserMessage+deliverAs:steer 单形态)**:直调不链式;markDelivered 闭包与 send 的 try 分离(send throw 不写 rcpt 留队);5s setInterval(scanQueue) 幂等重扫兜 fs.watch 丢事件。lint 按此重写为四条事故免疫(禁链式/必 steer 禁 followUp/同步 try-catch 且 catch 禁写 rcpt/周期重扫必备),旧 lint 禁 sendUserMessage 是过时知识已废;反证:事故版三雷全红终版绿。
+- **D16-3 教训:过时 lint 比没有 lint 危险**——旧规则用旧语义拦正确实现;事故后 lint 必须随上游语义演进重写,实证源码优先于相信存量规则。
