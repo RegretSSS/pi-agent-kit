@@ -70,13 +70,11 @@ function targetedAtOtherInstance(envelope: Record<string, unknown>, pane: string
 
 export default function (pi: ExtensionAPI) {
   const root = mailboxRoot();
-  if (!fs.existsSync(path.join(root, "registry.json"))) {
-    return;
-  }
   let agentId: string | null = null;
   let watcher: fs.FSWatcher | null = null;
   let heartbeat: ReturnType<typeof setInterval> | null = null;
   let resolver: ReturnType<typeof setInterval> | null = null;
+  let rescuer: ReturnType<typeof setInterval> | null = null;
   const injected = new Set<string>();
   const inflight = new Set<string>();
 
@@ -123,13 +121,19 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     inflight.add(msgId);
+    const markDelivered = (): void => {
+      try {
+        const handle = fs.openSync(rcpt, "wx");
+        fs.writeSync(handle, JSON.stringify({ ts: Date.now() / 1000 }));
+        fs.closeSync(handle);
+        injected.add(msgId);
+      } catch {}
+      inflight.delete(msgId);
+    };
     try {
-      pi.sendMessage({ customType: "a2a-inbox", content: wakeText, display: true }, { triggerTurn: true, deliverAs: "steer" });
-      const handle = fs.openSync(rcpt, "wx");
-      fs.writeSync(handle, JSON.stringify({ ts: Date.now() / 1000 }));
-      fs.closeSync(handle);
-      injected.add(msgId);
-    } catch {} finally {
+      pi.sendUserMessage(wakeText, { deliverAs: "steer" });
+      markDelivered();
+    } catch {
       inflight.delete(msgId);
     }
   }
@@ -181,6 +185,8 @@ export default function (pi: ExtensionAPI) {
 
   resolver = setInterval(tryResolve, RESOLVE_MS);
   resolver.unref?.();
+  rescuer = setInterval(scanQueue, RESOLVE_MS);
+  rescuer.unref?.();
   tryResolve();
 
   pi.on("session_shutdown", () => {
@@ -192,6 +198,9 @@ export default function (pi: ExtensionAPI) {
     }
     if (resolver) {
       clearInterval(resolver);
+    }
+    if (rescuer) {
+      clearInterval(rescuer);
     }
   });
 }
