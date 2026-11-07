@@ -128,3 +128,18 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D16-1 三坑源码实证(pi-coding-agent 1.5.0)**:①ExtensionAPI 层 sendUserMessage(agent-session.js:2792)fire-and-forget 无 return,.then 即 TypeError;类型面双定义(session 层 1928 行才是 Promise<void>)。②prompt() 1670 行 `isStreaming ? streamingBehavior : undefined`——idle 时该选项整体被忽略走正常提交(唤醒),streaming 中缺省则 1684 行同步 throw(加载期遗留信撞未就绪运行时=PI_EXIT 循环)。③followUp 两级队列恒劣后用户手打字,长回合信饿死。
 - **D16-2 终版形态(sendUserMessage+deliverAs:steer 单形态)**:直调不链式;markDelivered 闭包与 send 的 try 分离(send throw 不写 rcpt 留队);5s setInterval(scanQueue) 幂等重扫兜 fs.watch 丢事件。lint 按此重写为四条事故免疫(禁链式/必 steer 禁 followUp/同步 try-catch 且 catch 禁写 rcpt/周期重扫必备),旧 lint 禁 sendUserMessage 是过时知识已废;反证:事故版三雷全红终版绿。
 - **D16-3 教训:过时 lint 比没有 lint 危险**——旧规则用旧语义拦正确实现;事故后 lint 必须随上游语义演进重写,实证源码优先于相信存量规则。
+
+## D18(pi-aicontest"乱流"三定谳 + 守护纪律,2026-11-08 凌晨)
+
+- **D18-1 三层定谳(a2a-mailbox 会话与 kit 独立取证合并)**:①投递面干净(pi-native 全闭环,首判"同秒双信道并发"系 ack 时刻耦合误读)②m02905 本体=外部执行体错层键入:respawn 命令(带 A2A_HOST_TAG,形态即本仓处方格式)经 tmux send-keys 打进活 pi 前台窗,被 TUI 当用户输入提交(session line2764 实证,94 字符)③f2a94a465b29 伪信=模型幻觉:hub 零痕+session 零 user 行,模型退化时自产 A2A 格式+伪造引用链+伪造 task-notification(Done>Done 错乱标签为自产特征)。
+- **D18-2 因果链**:错层键入(17:05:10)嵌在模型退化序列(16:24-17:15)正中,非语义 shell 命令突入对话流疑为退化诱因;同一退化产出"批量已跑完"幻觉伪报(journal 实际在跑)——退化会话的口头总结不可信,以投递记录/journal/盘面为准。
+- **D18-3 守护纪律固化**(两源:a2a-mailbox 对齐请求+本事故):判 pi 生死以 native-inbox/<id>/alive.json 心跳(20s 级)为准,输出静止≠死(长回合/workflow 天然安静);恢复/通知永不向 TUI 前台窗 send-keys,恢复直接 mail_send;确需 respawn 先验 alive.json。已入 ~/.pi/agent/AGENTS.md 全局约定+memory 档案(pi-liveness-alive-json)。
+- **D18-4 方法论铁律**:投递排查以投递记录(hub.log+queue/rcpt/ack)为唯一证据源;session user 行判据(真实注入必有 user 行)与之互补成对;退化会话内呈现的"信"不可作证据(模型自产伪信与真信不可分辨)。
+
+## D18(pi-aicontest"乱流"定谳 + 同模型退化差异,2026-11-08 凌晨)
+
+- **D18-1 三层定谳(a2a-mailbox 会话与 kit 独立取证合并+用户亲证)**:①投递面干净(pi-native 全闭环;首判"同秒双信道并发"系 ack 时刻耦合误读)②m02905 本体=用户错层键入:用户看到乱码输出后 respawn,命令(A2A_HOST_TAG=desktop ~/.local/bin/pi --session...)经 send-keys 打进活 pi 前台窗被 TUI 当用户输入提交(session line2764,94 字符,01:05:10)③f2a94a465b29 伪信=模型幻觉:hub 零痕+session 零 user 行,模型自产 A2A 格式+伪造引用链+伪 task-notification(Done>Done 错乱标签为自产特征)。
+- **D18-2 因果序(用户修正)**:退化在先(00:24"批量已跑完"伪报,journal 实际在跑),错层键入在后——非诱因;但 01:05 键入触发 13 连发工具循环(全 200,20s/50507in 起步),退化在这段被放大产出(伪信/重复循环),01:15 用户中断(499)。
+- **D18-3 同模型同 key 的差异定谳(request-archive 实证)**:pi 主会话走 group/auto-glm-5-3 的 OpenAI-completions 形(reasoning_effort/max_completion_tokens),magpie 内部转换后仍打 plugin://zcode/v1/messages——与 CC 的 anthropic 形最终同端点,参数面健康;真差异在会话体质:57KB system/累计 2.2M/输入史极脏(A2A 信+通知+数字语境+错层命令),GLM 退化是概率性的,脏语境放大之。结论:非 pi bug;pi 缺退化防线是真缺口(候选:degeneration-guard 扩展,输出重复度检测)。
+- **D18-4 守护纪律固化**:判 pi 生死以 native-inbox/<id>/alive.json 心跳(20s 级)为准,输出静止≠死;恢复/通知永不向 TUI 前台窗 send-keys(本次用户手滑实证错层机制),恢复直接 mail_send;确需 respawn 先验 alive.json。已入 ~/.pi/agent/AGENTS.md+memory(pi-liveness-alive-json)。
+- **D18-5 方法论铁律**:投递排查以投递记录(hub.log+queue/rcpt/ack)为唯一证据源;session user 行判据互补成对;退化会话的口头总结不可信(会幻觉完成态),以 journal/盘面为准。
