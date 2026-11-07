@@ -116,3 +116,23 @@ def test_reap_owner_yield_takeover_self(tmp_path) -> None:
     assert out["deadOwnerState"] == "exited"
     assert out["yieldWhileOwnerAlive"] == "running"
     assert out["yieldAfterOwnerDeath"] == "exited"
+
+
+def test_poll_for_progress_three_modes(tmp_path) -> None:
+    instant = drive(tmp_path, "poll-progress", {"mode": "instant"})
+    assert instant["result"]["changed"] is True and instant["result"]["waitedMs"] == 0
+    timeout = drive(tmp_path, "poll-progress", {"mode": "timeout", "waitMs": 400, "intervalMs": 50})
+    assert timeout["result"]["changed"] is False and timeout["result"]["waitedMs"] >= 350
+    grow = drive(tmp_path, "poll-progress", {"mode": "grow", "delayMs": 250, "waitMs": 2000, "intervalMs": 50})
+    assert grow["result"]["changed"] is True and 200 <= grow["result"]["waitedMs"] < 1500
+    exited = drive(tmp_path, "poll-progress", {"mode": "exit", "delayMs": 250, "waitMs": 2000, "intervalMs": 50})
+    assert exited["result"]["changed"] is True and exited["result"]["state"] == "exited" and exited["result"]["cursor"] == 10
+
+
+def test_output_wait_real_log_growth(tmp_path) -> None:
+    out = drive(tmp_path, "output-wait", {"appendAfterMs": 300, "appendText": "watcher-woken", "waitMs": 3000})
+    assert out["result"]["changed"] is True
+    assert out["result"]["content"] == "watcher-woken"
+    assert out["result"]["elapsedMs"] >= 250
+    quiet = drive(tmp_path, "output-wait", {"waitMs": 400})
+    assert quiet["result"]["changed"] is False and quiet["result"]["content"] == ""

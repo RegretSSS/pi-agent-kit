@@ -72,6 +72,31 @@ export function readRange(record: TaskRecord, log: Buffer, since: number): { con
 	return { content: sanitizeLogText(log.subarray(start).toString("utf8")), cursor };
 }
 
+export type ProgressSnapshot = { cursor: number; state: TaskState; exitCode: number | null };
+
+export async function pollForProgress(
+	probe: () => Promise<ProgressSnapshot>,
+	baseline: number,
+	waitMs: number,
+	signal?: AbortSignal,
+	intervalMs = 200,
+): Promise<{ changed: boolean; waitedMs: number; snapshot: ProgressSnapshot }> {
+	const start = Date.now();
+	let snapshot = await probe();
+	if (snapshot.cursor > baseline || snapshot.state === "exited") {
+		return { changed: true, waitedMs: 0, snapshot };
+	}
+	const deadline = start + waitMs;
+	while (Date.now() < deadline && !signal?.aborted) {
+		await new Promise((resolve) => setTimeout(resolve, Math.min(intervalMs, deadline - Date.now())));
+		snapshot = await probe();
+		if (snapshot.cursor > baseline || snapshot.state === "exited") {
+			return { changed: true, waitedMs: Date.now() - start, snapshot };
+		}
+	}
+	return { changed: false, waitedMs: Date.now() - start, snapshot };
+}
+
 export function parseLogTail(text: string, chars: number): string {
 	const squashed = sanitizeLogText(text).replace(/\s+/g, " ").trim();
 	return squashed.length <= chars ? squashed : squashed.slice(-chars);
@@ -415,22 +440,39 @@ export default async function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "task_output",
 		label: "Task Output",
-		description: "增量读后台任务输出:传上次返回的 cursor,返回新内容与新 cursor;cursor 为 UTF-8 字节游标。",
+		description: "增量读后台任务输出:传上次返回的 cursor,返回新内容与新 cursor;cursor 为 UTF-8 字节游标。传 wait(秒,上限 120)进入阻塞模式:调用时已有未读增量则立即返回,否则阻塞至有新输出或任务退出(立即返回),超时返回空不报错——一次调用等一段,免去裸 sleep 与连环轮询。",
 		parameters: Type.Object({
 			id: Type.String({ description: "任务 id 或 name" }),
 			since: Type.Optional(Type.Integer({ description: "上次返回的 cursor,缺省从头读" })),
+			wait: Type.Optional(Type.Integer({ minimum: 1, maximum: 120, description: "阻塞等待秒数:有增量/任务退出提前返回,超时返回空" })),
 		}),
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId, params, signal) {
 			const task = await registry.find(params.id);
 			if (!task) {
 				return { content: [{ type: "text", text: `无任务 ${params.id}` }], details: { found: false }, isError: true };
 			}
-			const log = await registry.readLog(task.id);
-			const { content, cursor } = readRange(task, log ?? Buffer.alloc(0), params.since ?? 0);
-			const protocol = `[cursor=${cursor} state=${task.state} exit=${task.exitCode ?? "-"}]`;
+			const readSnapshot = async (): Promise<ProgressSnapshot & { log: Buffer; record: TaskRecord }> => {
+				await registry.refreshFromJournal();
+				const live = registry.get(task.id) ?? task;
+				const log = await registry.readLog(task.id);
+				const buffer = log ?? Buffer.alloc(0);
+				return { cursor: live.logBase + buffer.length, state: live.state, exitCode: live.exitCode, log: buffer, record: live };
+			};
+			let waitedMs = 0;
+			if (params.wait !== undefined) {
+				const first = await readSnapshot();
+				const hasPending = (params.since ?? 0) < first.cursor;
+				if (!hasPending) {
+					const outcome = await pollForProgress(readSnapshot, first.cursor, params.wait * 1000, signal);
+					waitedMs = outcome.waitedMs;
+				}
+			}
+			const current = await readSnapshot();
+			const { content, cursor } = readRange(current.record, current.log, params.since ?? 0);
+			const protocol = `[cursor=${cursor} state=${current.state} exit=${current.exitCode ?? "-"}${waitedMs > 0 ? ` waited=${Math.round(waitedMs / 1000)}s` : ""}]`;
 			return {
 				content: [{ type: "text", text: `${content || "(无新输出)"}\n${protocol}` }],
-				details: { cursor, state: task.state, exitCode: task.exitCode },
+				details: { cursor, state: current.state, exitCode: current.exitCode, waitedMs },
 			};
 		},
 	});

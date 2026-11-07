@@ -142,6 +142,50 @@ switch (scenario) {
 		out.yieldAfterOwnerDeath = all.find((t) => t.id === yieldId)?.state;
 		break;
 	}
+	case "poll-progress": {
+		const { pollForProgress } = await import("../extensions/tasks.ts");
+		const mode = payload.mode;
+		let probeCalls = 0;
+		const started = Date.now();
+		const probe = async () => {
+			probeCalls += 1;
+			if (mode === "instant") return { cursor: 100, state: "running", exitCode: null };
+			if (mode === "timeout") return { cursor: 10, state: "running", exitCode: null };
+			if (mode === "grow" && Date.now() - started >= (payload.delayMs ?? 300)) return { cursor: 50, state: "running", exitCode: null };
+			if (mode === "exit" && Date.now() - started >= (payload.delayMs ?? 300)) return { cursor: 10, state: "exited", exitCode: 3 };
+			return { cursor: 10, state: "running", exitCode: null };
+		};
+		const result = await pollForProgress(probe, 10, (payload.waitMs ?? 1000), undefined, (payload.intervalMs ?? 50));
+		out.result = { changed: result.changed, waitedMs: result.waitedMs, cursor: result.snapshot.cursor, state: result.snapshot.state };
+		out.probeCalls = probeCalls;
+		out.elapsedMs = Date.now() - started;
+		break;
+	}
+	case "output-wait": {
+		const id = await registry.nextId();
+		const record = await registry.recordCreate(id, "watcher", root, "watcher", process.pid);
+		const { appendFile } = await import("node:fs/promises");
+		if (payload.appendAfterMs) {
+			setTimeout(() => {
+				appendFile(`${root}/${id}.log`, payload.appendText ?? "woken", "utf8").catch(() => {});
+			}, payload.appendAfterMs);
+		}
+		const t0 = Date.now();
+		const readSnapshot = async () => {
+			await registry.refreshFromJournal();
+			const live = registry.get(id);
+			const log = await registry.readLog(id);
+			const buffer = log ?? Buffer.alloc(0);
+			return { cursor: live.logBase + buffer.length, state: live.state, exitCode: live.exitCode, log: buffer, record: live };
+		};
+		const { pollForProgress, readRange } = await import("../extensions/tasks.ts");
+		const first = await readSnapshot();
+		const outcome = await pollForProgress(readSnapshot, first.cursor, payload.waitMs ?? 3000, undefined, 50);
+		const final = await readSnapshot();
+		const range = readRange(final.record, final.log, first.cursor);
+		out.result = { changed: outcome.changed, waitedMs: outcome.waitedMs, content: range.content, elapsedMs: Date.now() - t0 };
+		break;
+	}
 	default:
 		throw new Error(`unknown scenario: ${scenario}`);
 }
