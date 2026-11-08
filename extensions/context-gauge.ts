@@ -3,6 +3,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 export const WARN_RATIO = 0.75;
 export const URGENT_RATIO = 0.9;
 export const REPORT_INTERVAL_MS = 15 * 60 * 1000;
+export const PCT_BUCKET = 0.05;
 
 export function formatTokens(tokens: number): string {
 	return tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : String(tokens);
@@ -29,23 +30,29 @@ export function gaugeLine(tokens: number, contextWindow: number, now = new Date(
 	return `[ctx ${pct}% ${where} | ${clock}]`;
 }
 
-export function shouldReport(tokens: number, contextWindow: number, lastReportAt: number, lastTier: number, nowMs: number): { report: boolean; tier: number } {
-	const tier = tokens / contextWindow >= URGENT_RATIO ? 2 : tokens / contextWindow >= WARN_RATIO ? 1 : 0;
-	const tierCrossed = tier > lastTier;
+export function shouldReport(tokens: number, contextWindow: number, lastReportAt: number, lastTier: number, lastBucket: number, nowMs: number): { report: boolean; tier: number; bucket: number } {
+	const ratio = tokens / contextWindow;
+	const tier = ratio >= URGENT_RATIO ? 2 : ratio >= WARN_RATIO ? 1 : 0;
+	const bucket = Math.floor(ratio / PCT_BUCKET);
 	const due = nowMs - lastReportAt >= REPORT_INTERVAL_MS;
-	return { report: due || tierCrossed, tier };
+	const bucketCrossed = tier === 0 && bucket !== lastBucket;
+	const highWaterAlways = tier >= 1;
+	return { report: due || bucketCrossed || highWaterAlways || tier > lastTier, tier, bucket };
 }
 
 export default async function (pi: ExtensionAPI) {
 	let lastReportAt = 0;
 	let lastTier = 0;
+	let lastBucket = -1;
 	pi.on("session_start", async () => {
 		lastReportAt = 0;
 		lastTier = 0;
+		lastBucket = -1;
 	});
 	pi.on("session_compact", async () => {
 		lastReportAt = 0;
 		lastTier = 0;
+		lastBucket = -1;
 	});
 	pi.on("tool_result", async (event, ctx) => {
 		const usage = ctx.getContextUsage();
@@ -57,10 +64,11 @@ export default async function (pi: ExtensionAPI) {
 			);
 		}
 		const nowMs = Date.now();
-		const gate = shouldReport(usage.tokens, usage.contextWindow, lastReportAt, lastTier, nowMs);
+		const gate = shouldReport(usage.tokens, usage.contextWindow, lastReportAt, lastTier, lastBucket, nowMs);
 		if (!gate.report) return;
 		lastReportAt = nowMs;
 		lastTier = gate.tier;
+		lastBucket = gate.bucket;
 		const appended = [...event.content, { type: "text" as const, text: gaugeLine(usage.tokens, usage.contextWindow) }];
 		return event.structuredContent === undefined
 			? { content: appended }

@@ -61,6 +61,27 @@ def test_compact_resets_throttle() -> None:
     assert re.fullmatch(r"\[ctx 30% 60k/200k" + CLOCK_RE, out["results"][1]["appended"])
 
 
+def test_pct_bucket_cross_reports() -> None:
+    out = drive("attach", {"steps": [
+        {"usage": {"tokens": 124000, "window": 200000, "percent": 62}},
+        {"usage": {"tokens": 126000, "window": 200000, "percent": 63}},
+        {"usage": {"tokens": 138000, "window": 200000, "percent": 69}},
+    ]})
+    assert out["results"][0]["appended"] is not None
+    assert out["results"][1]["appended"] is None
+    assert out["results"][2]["appended"] is not None
+
+
+def test_high_water_reports_every_tool() -> None:
+    out = drive("attach", {"steps": [
+        {"usage": {"tokens": 156000, "window": 200000, "percent": 78}},
+        {"usage": {"tokens": 158000, "window": 200000, "percent": 79}},
+    ]})
+    assert out["results"][0]["appended"] is not None
+    assert out["results"][1]["appended"] is not None
+    assert "75%建议线" in out["results"][1]["appended"]
+
+
 def test_error_result_also_reported() -> None:
     out = drive("attach", {"steps": [{"isError": True, "usage": {"tokens": 124000, "window": 200000, "percent": 62}}]})
     assert re.fullmatch(r"\[ctx 62% 124k/200k" + CLOCK_RE, out["results"][0]["appended"])
