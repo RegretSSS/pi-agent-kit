@@ -60,7 +60,7 @@ export default async function (pi: ExtensionAPI) {
 		if (ctx.hasUI) {
 			ctx.ui.setStatus(
 				"context-gauge",
-				`ctx ${usage.percent ?? "?"}% ${formatTokens(usage.tokens)}/${formatTokens(usage.contextWindow)} | ${clockLine()}`,
+				`ctx ${usage.percent == null ? "?" : Math.round(usage.percent)}% ${formatTokens(usage.tokens)}/${formatTokens(usage.contextWindow)} | ${clockLine()}`,
 			);
 		}
 		const nowMs = Date.now();
@@ -79,7 +79,7 @@ export default async function (pi: ExtensionAPI) {
 		const usage = ctx.getContextUsage();
 		ctx.ui.setStatus(
 			"context-gauge",
-			usage && usage.percent !== null ? `ctx ${usage.percent}% ${formatTokens(usage.tokens ?? 0)}/${formatTokens(usage.contextWindow)} | ${clockLine()}` : undefined,
+			usage && usage.percent !== null ? `ctx ${Math.round(usage.percent)}% ${formatTokens(usage.tokens ?? 0)}/${formatTokens(usage.contextWindow)} | ${clockLine()}` : undefined,
 		);
 	});
 }

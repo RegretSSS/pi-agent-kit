@@ -96,6 +96,11 @@ def test_structured_content_preserved() -> None:
     assert out["results"][1]["structuredContent"] is None
 
 
+def test_footer_percent_rounded() -> None:
+    out = drive("attach", {"steps": [{"hasUI": True, **usage(49000, 24.5)}]})
+    assert re.fullmatch(r"ctx 25% 49k/200k \| \d{4}-\d{2}-\d{2} \d{2}:\d{2} 周[一二三四五六日]\(UTC[+-]\d+(?:\.\d)?\)", out["statuses"][0])
+
+
 def test_footer_status_only_with_ui() -> None:
     with_ui = drive("attach", {"steps": [{"hasUI": True, **usage(40000, 20)}, {"hasUI": True, **usage(41000, 20)}]})
     assert len(with_ui["statuses"]) == 2
