@@ -143,3 +143,11 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D18-3 同模型同 key 的差异定谳(request-archive 实证)**:pi 主会话走 group/auto-glm-5-3 的 OpenAI-completions 形(reasoning_effort/max_completion_tokens),magpie 内部转换后仍打 plugin://zcode/v1/messages——与 CC 的 anthropic 形最终同端点,参数面健康;真差异在会话体质:57KB system/累计 2.2M/输入史极脏(A2A 信+通知+数字语境+错层命令),GLM 退化是概率性的,脏语境放大之。结论:非 pi bug;pi 缺退化防线是真缺口(候选:degeneration-guard 扩展,输出重复度检测)。
 - **D18-4 守护纪律固化**:判 pi 生死以 native-inbox/<id>/alive.json 心跳(20s 级)为准,输出静止≠死;恢复/通知永不向 TUI 前台窗 send-keys(本次用户手滑实证错层机制),恢复直接 mail_send;确需 respawn 先验 alive.json。已入 ~/.pi/agent/AGENTS.md+memory(pi-liveness-alive-json)。
 - **D18-5 方法论铁律**:投递排查以投递记录(hub.log+queue/rcpt/ack)为唯一证据源;session user 行判据互补成对;退化会话的口头总结不可信(会幻觉完成态),以 journal/盘面为准。
+
+## D19(memory 可见性重做:索引分层+trigram 自动召回,2026-11-08)
+
+- **D19-1 诊断("只写不读"根因)**:注入链路本通(10:28 请求 system prompt 实证含索引),坏在可见性策略——mergedContextText 单一 top-30 热度排序,43 条全局存量(含 18 条 D15 准入闸前的 type:project 误放)全占坑,本项目 2 条被挤进"其余略";新写条目 ref=0 恒垫底→不进索引→不被引用→ref 恒 0 恶性循环。pi 侧行为数据其实有读(主会话 search=34),但 push 通道失效后读退化为偶发 pull。
+- **D19-2 索引重写(对齐 CC 的 MEMORY.md 全量注入语义)**:项目桶全列(PROJECT_INDEX_TOP_K=30 兜底)+全局桶 type 分层(user/feedback>reference>project 误放沉底)截 GLOBAL_INDEX_TOP_K=18;索引行 description 截 64 字符(存量实测 avg 128 字符,30 行吃 system prompt 16%——行肥即冗余);header 给两桶正文绝对路径(read 直达)+行为指引。实测 45 条存量渲染 ~1.5k 字符,较旧 3.9k 减 60%。
+- **D19-3 recall 自动召回(用户设计:扫 output,trigram 命中即拉入,上下文不出现第二次)**:before_agent_start(messageType==="user" 限定,subagent/custom 不召回)取 trigger=本轮用户输入+尾部 assistant(各截 1500 字符),FTS trigram 混搜两桶,termsHit>=2 门槛,excludeKeys 会话内去重,命中≤3 条以 customType=agent-memory-recall 消息注入(display:false)——走消息流不碰 system prompt(cache 友好;pi sections diff 机制虽也 cache 友好,但消息通道与 CC system-reminder 同构且不累积 patch);search 既有 markReferenced 使召回顺手养权重。
+- **D19-4 缓存指纹修复(1/2 疑案破案)**:listEntries 缓存探测原为目录 mtime——writeFile 原地更新已存在文件不改父目录 mtime,他进程的增量更新对本进程永不可见(实证:项目桶 2 文件索引只报 1 条);改文件级指纹(readdir+逐文件 mtimeMs 聚合)。
+- **D19-5 误放存量迁移**:scripts/migrate-misplaced-global-memories.mjs(dry-run 默认,--apply 先备份 memory.bak-d19,幂等)——18 条 type:project 按名字前缀迁对应项目桶(backend-*/cc-*→EngAssistantBackend 15 条,aicontest-*→aicontest 3 条),dry-run 全映射无遗漏;--apply 待用户批准。配套 lints 三条(index 行截断/recall 去重护栏/文件级指纹)。
