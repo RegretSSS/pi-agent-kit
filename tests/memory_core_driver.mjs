@@ -25,13 +25,9 @@ switch (scenario) {
 		break;
 	}
 	case "index": {
-		out.index = await store.contextIndexText();
+		const { readFile } = await import("node:fs/promises");
+		out.indexFile = await readFile(`${root}/MEMORY.md`, "utf8").catch(() => null);
 		out.entries = (await store.listEntries(true)).map((e) => ({ name: e.name, type: e.type, expiryAt: e.expiryAt ?? null, archiveCandidate: e.archiveCandidate ?? false }));
-		break;
-	}
-	case "render-context": {
-		const fake = Array.from({ length: 35 }, (_, i) => ({ name: "n" + i, description: "d" + i, type: "reference", file: `n${i}.md`, body: "b" }));
-		out.rendered = store.renderContextIndex(fake);
 		break;
 	}
 	case "backdate": {
@@ -70,6 +66,20 @@ switch (scenario) {
 		out.root = projectMemoryRoot(p.cwd, p.globalRoot ?? root);
 		break;
 	}
+	case "stale-cache": {
+		const { readFile, writeFile } = await import("node:fs/promises");
+		await store.save("external-watcher", "旧描述文本", "reference", "旧正文");
+		const before = (await store.listEntries()).find((e) => e.name === "external-watcher").description;
+		const file = `${root}/external-watcher.md`;
+		const text = await readFile(file, "utf8");
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		await writeFile(file, text.replace("旧描述文本", "新描述文本来自外部进程"), "utf8");
+		const after = (await store.listEntries()).find((e) => e.name === "external-watcher").description;
+		out.before = before;
+		out.after = after;
+		out.sawExternalUpdate = after.includes("新描述文本");
+		break;
+	}
 	case "scoped": {
 		const p = JSON.parse(payload);
 		const mem = new ScopedMemory(root, p.projectRoot);
@@ -84,6 +94,10 @@ switch (scenario) {
 			out.text = await mem.mergedContextText();
 		} else if (p.action === "maintenance") {
 			out.promoted = (await mem.sessionMaintenance()).map((e) => e.name);
+		} else if (p.action === "recall") {
+			const seen = new Set(p.exclude ?? []);
+			const hits = await mem.recall(p.query, seen);
+			out.hits = hits.map((h) => ({ key: `${h.scope}:${h.entry.name}`, termsHit: h.termsHit }));
 		}
 		mem.close();
 		break;

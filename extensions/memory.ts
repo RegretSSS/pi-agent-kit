@@ -14,7 +14,13 @@ const RULE_SHAPED = [/看到[^。\n]{1,40}就\s*(fail|拒绝|报错|禁)/, /(一
 const PROJECT_TTL_MS = 30 * 24 * 3600 * 1000;
 const BODY_PREVIEW_CHARS = 600;
 const CANDIDATES_MAX_BYTES = 5 * 1024 * 1024;
-const CONTEXT_TOP_K = 30;
+const PROJECT_INDEX_TOP_K = 30;
+const GLOBAL_INDEX_TOP_K = 18;
+const DESCRIPTION_INDEX_CHARS = 64;
+const RECALL_LIMIT = 3;
+const RECALL_MIN_TERMS_HIT = 2;
+const RECALL_TRIGGER_CHARS = 1500;
+const RECALL_PREVIEW_CHARS = 400;
 const DESCRIPTION_MAX_CHARS = 300;
 
 export function normalizeName(name: string): string {
@@ -180,9 +186,7 @@ export class MemoryStore {
 	readonly root: string;
 	private db: DatabaseSync | null = null;
 	private entriesCache: MemoryEntry[] | null = null;
-	private indexMtimeMs = 0;
-	private dirMtimeMs = -1;
-	private indexText: string | null = null;
+	private dirFingerprint: string | null = null;
 
 	constructor(root?: string) {
 		this.root = root ?? join(homedir(), ".agents", "memory");
@@ -215,21 +219,29 @@ export class MemoryStore {
 			if (parsed) entries.push(parsed);
 		}
 		this.entriesCache = entries;
-		this.dirMtimeMs = await this.probeDirMtime();
+		this.dirFingerprint = await this.probeDirFingerprint();
 		return entries;
 	}
 
-	private async probeDirMtime(): Promise<number> {
+	private async probeDirFingerprint(): Promise<string> {
+		let sum = 0n;
+		let count = 0;
 		try {
-			return (await stat(this.root)).mtimeMs;
+			for (const name of await readdir(this.root)) {
+				if (!name.endsWith(".md")) continue;
+				count += 1;
+				const info = await stat(join(this.root, name));
+				sum += BigInt(Math.round(info.mtimeMs * 1000));
+			}
 		} catch {
-			return -1;
+			return "missing";
 		}
+		return `${count}:${sum}`;
 	}
 
 	private async dirUnchanged(): Promise<boolean> {
-		if (this.dirMtimeMs < 0) return false;
-		return (await this.probeDirMtime()) === this.dirMtimeMs;
+		if (this.dirFingerprint === null) return false;
+		return (await this.probeDirFingerprint()) === this.dirFingerprint;
 	}
 
 	async rebuildFts(): Promise<void> {
@@ -251,7 +263,6 @@ export class MemoryStore {
 	async rebuildIndex(): Promise<MemoryEntry[]> {
 		const entries = await this.listEntries(true);
 		await writeFile(join(this.root, "MEMORY.md"), renderIndex(entries), "utf8");
-		this.indexText = null;
 		try {
 			await this.rebuildFts();
 		} catch {}
@@ -430,37 +441,11 @@ export class MemoryStore {
 		} catch {}
 		await appendFile(path, JSON.stringify(record) + "\n", "utf8");
 	}
+}
 
-	renderContextIndex(entries: MemoryEntry[]): string {
-		const header = `持久跨会话记忆可用。下方为高频条目(共 ${entries.length} 条);未列出条目与正文用 memory_search 按需检索,不要凭空假设没有。`;
-		const refs = new Map((this.open().prepare("SELECT name, last_referenced FROM memory_refs").all() as RefRow[]).map((row) => [row.name, row.last_referenced]));
-		const ranked = [...entries].sort((a, b) => {
-			const ra = refs.get(a.name) ?? 0;
-			const rb = refs.get(b.name) ?? 0;
-			if (ra !== rb) return rb - ra;
-			return a.name.localeCompare(b.name);
-		});
-		const shown = ranked.slice(0, CONTEXT_TOP_K);
-		const rows = shown.map((entry) => `- [${entry.type}] ${entry.name} — ${entry.description}`);
-		if (ranked.length > shown.length) {
-			rows.push(`(其余 ${ranked.length - shown.length} 条略,用 memory_search 检索)`);
-		}
-		return [header, "", ...rows].join("\n");
-	}
-
-	async contextIndexText(): Promise<string | null> {
-		const indexPath = join(this.root, "MEMORY.md");
-		let info;
-		try {
-			info = await stat(indexPath);
-		} catch {
-			return null;
-		}
-		if (this.indexMtimeMs === info.mtimeMs && this.indexText !== null) return this.indexText;
-		this.indexMtimeMs = info.mtimeMs;
-		this.indexText = this.renderContextIndex(await this.listEntries());
-		return this.indexText;
-	}
+function indexLine(scope: MemoryScope, entry: MemoryEntry): string {
+	const desc = stripControlCodes(entry.description).replace(/\s+/g, " ");
+	return `- [${scope}] [${entry.type}] ${entry.name} — ${desc.length > DESCRIPTION_INDEX_CHARS ? desc.slice(0, DESCRIPTION_INDEX_CHARS) + "…" : desc}`;
 }
 
 function formatHits(hits: ScopedHit[]): string {
@@ -528,16 +513,30 @@ export class ScopedMemory {
 		const projectEntries = (await this.project.exists()) ? await this.project.listEntries() : [];
 		if (globalEntries.length === 0 && projectEntries.length === 0) return null;
 		const [globalRefs, projectRefs] = await Promise.all([this.global.lastReferencedMap(), this.project.lastReferencedMap()]);
-		const rows = [
-			...globalEntries.map((entry) => ({ entry, scope: "global" as MemoryScope, ref: globalRefs.get(entry.name) ?? 0 })),
-			...projectEntries.map((entry) => ({ entry, scope: "project" as MemoryScope, ref: projectRefs.get(entry.name) ?? 0 })),
-		];
-		rows.sort((a, b) => b.ref - a.ref || a.entry.name.localeCompare(b.entry.name));
-		const shown = rows.slice(0, CONTEXT_TOP_K);
-		const lines = shown.map((row) => `- [${row.scope}] [${row.entry.type}] ${row.entry.name} — ${row.entry.description}`);
-		if (rows.length > shown.length) lines.push(`(其余 ${rows.length - shown.length} 条略,用 memory_search 检索)`);
-		const header = `持久跨会话记忆可用(全局 ${globalEntries.length} 条 + 本项目 ${projectEntries.length} 条,按引用热度取前 ${shown.length});未列出条目与正文用 memory_search 混合检索,不要凭空假设没有。`;
+		const byRefDesc = (refs: Map<string, number>) => (a: MemoryEntry, b: MemoryEntry) => (refs.get(b.name) ?? 0) - (refs.get(a.name) ?? 0) || a.name.localeCompare(b.name);
+		const projectRows = [...projectEntries].sort(byRefDesc(projectRefs)).slice(0, PROJECT_INDEX_TOP_K);
+		const globalRank = (entry: MemoryEntry) => (entry.type === "user" || entry.type === "feedback" ? 0 : entry.type === "reference" ? 1 : entry.type === "project" ? 2 : 1);
+		const globalRows = [...globalEntries].sort((a, b) => globalRank(a) - globalRank(b) || byRefDesc(globalRefs)(a, b)).slice(0, GLOBAL_INDEX_TOP_K);
+		const lines = [...projectRows.map((entry) => indexLine("project", entry)), ...globalRows.map((entry) => indexLine("global", entry))];
+		const omitted = globalEntries.length - globalRows.length + projectEntries.length - projectRows.length;
+		if (omitted > 0) lines.push(`(其余 ${omitted} 条未列出,用 memory_search 检索)`);
+		const header = `持久跨会话记忆索引(本项目 ${projectEntries.length} 条 + 全局 ${globalEntries.length} 条,精选列出)。与当前任务相关的行:先 memory_search 拿正文,或直接读文件(本项目 ${this.project.root}/<name>.md,全局 ${this.global.root}/<name>.md);未列出的条目同样用 memory_search 检索,不要凭空假设没有。`;
 		return [header, "", ...lines].join("\n");
+	}
+
+	async recall(triggerText: string, excludeKeys: Set<string>, limit = RECALL_LIMIT): Promise<ScopedHit[]> {
+		const query = triggerText.slice(0, RECALL_TRIGGER_CHARS * 2);
+		if (splitTerms(query).length === 0) return [];
+		const [globalHits, projectHits] = await Promise.all([
+			this.global.search(query, 20),
+			this.project.exists().then((ok) => (ok ? this.project.search(query, 20) : Promise.resolve([] as SearchHit[]))),
+		]);
+		const merged = [
+			...(await this.scopedHits(this.global, "global", globalHits)),
+			...(await this.scopedHits(this.project, "project", projectHits)),
+		].filter((hit) => hit.termsHit >= RECALL_MIN_TERMS_HIT && !excludeKeys.has(`${hit.scope}:${hit.entry.name}`));
+		merged.sort((a, b) => b.termsHit - a.termsHit || a.entry.name.localeCompare(b.entry.name));
+		return merged.slice(0, limit);
 	}
 
 	close(): void {
@@ -555,6 +554,7 @@ export default async function (pi: ExtensionAPI) {
 		return scoped;
 	};
 	let toolErrors: { tool: string; message: string }[] = [];
+	let recalledKeys = new Set<string>();
 	let tokensIn = 0;
 	let tokensOut = 0;
 
@@ -623,10 +623,31 @@ export default async function (pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("before_agent_start", async (event) => {
+	pi.on("before_agent_start", async (event, ctx) => {
 		const index = await scoped?.mergedContextText();
-		if (!index) return;
-		event.systemPromptOptions.sections["agent-memory-index"] = index;
+		if (index) event.systemPromptOptions.sections["agent-memory-index"] = index;
+		if (event.messageType !== "user" || !scoped) return;
+		let tailAssistant = "";
+		try {
+			const branch = ctx.sessionManager.getBranch();
+			for (let i = branch.length - 1; i >= 0 && tailAssistant.length === 0; i--) {
+				const message = branch[i]?.message;
+				if (message?.role !== "assistant") continue;
+				const content = message.content;
+				tailAssistant = typeof content === "string" ? content : (Array.isArray(content) ? content.filter((block) => block?.type === "text").map((block) => (block as { text?: string }).text ?? "").join(" ") : "");
+			}
+		} catch {}
+		const trigger = `${event.prompt ?? ""}\n${tailAssistant.slice(-RECALL_TRIGGER_CHARS)}`;
+		const hits = await scoped.recall(trigger, recalledKeys);
+		if (hits.length === 0) return;
+		for (const hit of hits) recalledKeys.add(`${hit.scope}:${hit.entry.name}`);
+		const body = hits
+			.map((hit) => {
+				const preview = stripControlCodes(hit.entry.body.replace(/\s+/g, " ")).slice(0, RECALL_PREVIEW_CHARS);
+				return `[${hit.scope}] ${hit.entry.name} — ${hit.entry.description}\n${hit.entry.body.length > RECALL_PREVIEW_CHARS ? preview + "…" : preview}\n(path: ${join(hit.root, hit.entry.file)})`;
+			})
+			.join("\n\n");
+		return { message: { customType: "agent-memory-recall", content: `[memory recall] 本轮输入与以下跨会话记忆相关,已自动带出:\n${body}`, display: false } };
 	});
 
 	pi.on("tool_execution_end", async (event) => {
@@ -661,5 +682,6 @@ export default async function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", async () => {
 		scoped?.close();
 		scoped = null;
+		recalledKeys = new Set();
 	});
 }

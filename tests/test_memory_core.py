@@ -26,7 +26,7 @@ def test_save_rebuilds_index(tmp_path) -> None:
     assert "- [aliyun-ops](aliyun-ops.md) — 阿里云 cli 运维口径" in memory_md
     assert "- [compact-tool](compact-tool.md) — pi 会话压缩工具" in memory_md
     state = drive(tmp_path, "index")
-    assert "[reference] aliyun-ops — 阿里云 cli 运维口径" in state["index"]
+    assert "- [aliyun-ops](aliyun-ops.md) — 阿里云 cli 运维口径" in state["indexFile"]
     assert len(state["entries"]) == 2
 
 
@@ -149,13 +149,46 @@ def test_memory_reserved_name_rejected(tmp_path) -> None:
     assert drive(tmp_path, "index")["entries"] == []
 
 
-def test_context_index_capped_and_lossless_pointer(tmp_path) -> None:
-    out = drive(tmp_path, "render-context")
-    assert "共 35 条" in out["rendered"]
-    assert "其余 5 条略" in out["rendered"]
-    assert "memory_search" in out["rendered"]
-    rows = [line for line in out["rendered"].split("\n") if line.startswith("- [")]
-    assert len(rows) == 30
+def test_merged_index_project_full_global_layered_lines_bounded(tmp_path) -> None:
+    project_root = tmp_path / "projects" / "demo"
+    payload = {"projectRoot": str(project_root)}
+    long_desc = "超长描述" + "字" * 120
+    drive(tmp_path, "scoped", {**payload, "action": "save", "name": "demo-rule", "description": "sleep 禁用规则:验证启动用 task_output wait", "type": "feedback", "body": "不允许 sleep N 再看", "scope": "project"})
+    drive(tmp_path, "scoped", {**payload, "action": "save", "name": "demo-other", "description": "另一条项目记忆", "type": "project", "body": "b", "scope": "project"})
+    drive(tmp_path, "scoped", {**payload, "action": "save", "name": "g-fb", "description": "全局反馈 " + long_desc, "type": "feedback", "body": "b", "scope": "global"})
+    drive(tmp_path, "scoped", {**payload, "action": "save", "name": "g-ref", "description": "全局引用", "type": "reference", "body": "b", "scope": "global"})
+    misplaced = tmp_path / "g-misplaced.md"
+    misplaced.write_text("---\nname: g-misplaced\ndescription: 误放项目型\n\ntype: project\n---\n\n正文\n", encoding="utf8")
+    out = drive(tmp_path, "scoped", {**payload, "action": "context"})
+    text = out["text"]
+    assert "- [project] [feedback] demo-rule" in text
+    assert "- [project] [project] demo-other" in text
+    assert "- [global] [feedback] g-fb" in text
+    assert text.index("g-fb") < text.index("g-ref") < text.index("g-misplaced")
+    assert "…" in text
+    rows = [line for line in text.split("\n") if line.startswith("- [")]
+    assert all(len(line) <= 140 for line in rows)
+    assert "memory_search" in text
+    assert "不要凭空假设没有" in text
+
+
+def test_stale_cache_sees_external_file_update(tmp_path) -> None:
+    out = drive(tmp_path, "stale-cache")
+    assert out["before"] == "旧描述文本"
+    assert out["sawExternalUpdate"] is True
+
+
+def test_recall_hits_then_dedupe_and_term_floor(tmp_path) -> None:
+    project_root = tmp_path / "projects" / "demo"
+    payload = {"projectRoot": str(project_root)}
+    drive(tmp_path, "scoped", {**payload, "action": "save", "name": "wait-discipline", "description": "验证启动用 task_output wait 阻塞等增量", "type": "feedback", "body": "sleep 不作等待手段", "scope": "project"})
+    drive(tmp_path, "scoped", {**payload, "action": "save", "name": "unrelated", "description": "完全无关的条目", "type": "reference", "body": "zzz", "scope": "project"})
+    first = drive(tmp_path, "scoped", {**payload, "action": "recall", "query": "验证启动 task_output wait 怎么用"})
+    assert first["hits"] and first["hits"][0]["key"] == "project:wait-discipline"
+    second = drive(tmp_path, "scoped", {**payload, "action": "recall", "query": "验证启动 task_output wait 怎么用", "exclude": [h["key"] for h in first["hits"]]})
+    assert second["hits"] == []
+    thin = drive(tmp_path, "scoped", {**payload, "action": "recall", "query": "wait-discipline"})
+    assert all(h["termsHit"] >= 2 for h in thin["hits"])
 
 
 def test_append_mode_merges_into_existing(tmp_path) -> None:
@@ -305,7 +338,7 @@ def test_merged_context_labels(tmp_path) -> None:
     drive(tmp_path, "scoped", {"action": "save", "projectRoot": str(project_root), "name": "aliyun-cli", "description": "阿里云 cli 运维口径", "type": "reference", "body": "x", "scope": "global"})
     drive(tmp_path, "scoped", {"action": "save", "projectRoot": str(project_root), "name": "deploy-port", "description": "本仓部署端口", "type": "project", "body": "y"})
     out = drive(tmp_path, "scoped", {"action": "context", "projectRoot": str(project_root)})
-    assert "全局 1 条 + 本项目 1 条" in out["text"]
+    assert "本项目 1 条 + 全局 1 条" in out["text"]
     assert "- [global] [reference] aliyun-cli" in out["text"]
     assert "- [project] [project] deploy-port" in out["text"]
 
@@ -314,6 +347,6 @@ def test_merged_context_missing_project_bucket_no_throw(tmp_path) -> None:
     drive(tmp_path, "save", {"name": "g1", "description": "全局条目", "type": "reference", "body": "x"})
     missing = tmp_path / "projects" / "-w-aicontest"
     out = drive(tmp_path, "scoped", {"action": "context", "projectRoot": str(missing)})
-    assert "全局 1 条 + 本项目 0 条" in out["text"]
+    assert "本项目 0 条 + 全局 1 条" in out["text"]
     assert "- [global] [reference] g1" in out["text"]
     assert not missing.exists()
