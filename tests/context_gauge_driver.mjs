@@ -20,7 +20,11 @@ if (scenario === "line") {
 	for (const step of p.steps) {
 		if (step.turnStart) {
 			turn += 1;
-			await handlers["turn_start"]({ type: "turn_start", turnIndex: turn, timestamp: 0 });
+			await handlers["turn_start"]?.({ type: "turn_start", turnIndex: turn, timestamp: 0 });
+			continue;
+		}
+		if (step.compact) {
+			await handlers["session_compact"]?.({ type: "session_compact", reason: "manual" });
 			continue;
 		}
 		if (step.turnEnd) {
