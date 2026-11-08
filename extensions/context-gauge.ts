@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-export const WARN_RATIO = 0.75;
-export const URGENT_RATIO = 0.9;
+export const WARN_RATIO = 0.3;
+export const URGENT_RATIO = 0.5;
 export const REPORT_INTERVAL_MS = 15 * 60 * 1000;
 export const PCT_BUCKET = 0.05;
 
@@ -22,10 +22,10 @@ export function gaugeLine(tokens: number, contextWindow: number, now = new Date(
 	const where = `${formatTokens(tokens)}/${formatTokens(contextWindow)}`;
 	const clock = clockLine(now);
 	if (pct >= Math.round(URGENT_RATIO * 100)) {
-		return `[ctx ${pct}% ${where} ⚠ 越过90%紧迫线,当前工具批结束后立即用 compact 压缩(摘要带 fold-index) | ${clock}]`;
+		return `[ctx ${pct}% ${where} ⚠ 水位已过半,立刻用 compact 压缩自己(摘要带 fold-index) | ${clock}]`;
 	}
 	if (pct >= Math.round(WARN_RATIO * 100)) {
-		return `[ctx ${pct}% ${where} 已越过75%建议线,在自然工作边界用 compact 压缩(摘要带 fold-index) | ${clock}]`;
+		return `[ctx ${pct}% ${where} 水位已高,留意 compact 时机 | ${clock}]`;
 	}
 	return `[ctx ${pct}% ${where} | ${clock}]`;
 }
@@ -36,7 +36,7 @@ export function shouldReport(tokens: number, contextWindow: number, lastReportAt
 	const bucket = Math.floor(ratio / PCT_BUCKET);
 	const due = nowMs - lastReportAt >= REPORT_INTERVAL_MS;
 	const bucketCrossed = tier === 0 && bucket !== lastBucket;
-	const highWaterAlways = tier >= 1;
+	const highWaterAlways = tier >= 2;
 	return { report: due || bucketCrossed || highWaterAlways || tier > lastTier, tier, bucket };
 }
 
