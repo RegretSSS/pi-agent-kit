@@ -679,6 +679,10 @@ export default async function (pi: ExtensionAPI) {
 		await scoped.global.appendCandidateRecord(record);
 	});
 
+	pi.on("session_compact", async () => {
+		recalledKeys = new Set();
+	});
+
 	pi.on("session_shutdown", async () => {
 		scoped?.close();
 		scoped = null;

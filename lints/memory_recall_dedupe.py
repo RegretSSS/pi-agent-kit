@@ -38,6 +38,8 @@ def main() -> int:
             violations.append("注入消息缺 customType: \"agent-memory-recall\"——无法在 transcript/过滤层识别召回通道")
         if "display: false" not in body:
             violations.append("注入消息缺 display: false——自动召回是给 LLM 的上下文,TUI 刷屏会干扰用户")
+    if not re.search(r'pi\.on\("session_compact".{0,300}?recalledKeys\s*=\s*new Set', source, re.DOTALL):
+        violations.append("session_compact 未清 recalledKeys——compact 摘要吃掉已注入记忆的原文后(信息真空,D18 定谳幻觉温床)应允许重新注入,去重集只做会话内防重复")
     if violations:
         print(f"memory_recall_dedupe: {len(violations)} 处违规")
         for v in violations:
