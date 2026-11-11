@@ -33,6 +33,8 @@ def main() -> int:
         changes = re.findall(r'return commit\(', source)
         if len(changes) < 4:
             violations.append(f"变更动作(add/status/toggle/clear)只有 {len(changes)} 个走 commit——全部四动作必须落盘")
+    if "settleDone" not in source or "DONE_KEEP" not in source:
+        violations.append("缺 done 沉降(DONE_KEEP/settleDone)——已完条目无界累积会冲爆上下文(每次工具 content 全量渲染)")
     if "nextId" not in source:
         violations.append("缺 nextId 传递——重建后新增条目会撞 id")
     if re.search(r"parseTodos|contentText", source):

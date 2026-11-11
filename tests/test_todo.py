@@ -100,6 +100,51 @@ def test_multiline_text_survives_state() -> None:
     assert out["entries"][0]["todos"][0]["text"] == sneaky
 
 
+def test_done_settles_beyond_keep_three() -> None:
+    out = drive("session", {"steps": [
+        {"action": "add", "text": "t1"},
+        {"action": "add", "text": "t2"},
+        {"action": "add", "text": "t3"},
+        {"action": "add", "text": "t4"},
+        {"action": "toggle", "id": 1},
+        {"action": "toggle", "id": 2},
+        {"action": "toggle", "id": 3},
+        {"action": "list"},
+    ]})
+    assert out["steps"][7]["todos"] == [["1", "done"], ["2", "done"], ["3", "done"], ["4", "pending"]]
+    settle = drive("session", {"steps": [
+        {"action": "add", "text": "t1"},
+        {"action": "add", "text": "t2"},
+        {"action": "add", "text": "t3"},
+        {"action": "add", "text": "t4"},
+        {"action": "toggle", "id": 1},
+        {"action": "toggle", "id": 2},
+        {"action": "toggle", "id": 3},
+        {"action": "toggle", "id": 4},
+        {"action": "list"},
+    ]})
+    assert settle["steps"][8]["todos"] == [["2", "done"], ["3", "done"], ["4", "done"]]
+    assert settle["steps"][8]["text"].count("#1:") == 0
+
+
+def test_settled_history_still_in_journal() -> None:
+    first = drive("session", {"steps": [
+        {"action": "add", "text": "old"},
+        {"action": "add", "text": "keep-a"},
+        {"action": "add", "text": "keep-b"},
+        {"action": "add", "text": "keep-c"},
+        {"action": "toggle", "id": 1},
+        {"action": "toggle", "id": 2},
+        {"action": "toggle", "id": 3},
+        {"action": "toggle", "id": 4},
+    ]})
+    settled = [e for e in first["entries"] if not any(t["id"] == 1 for t in e["todos"])]
+    assert any(any(t["id"] == 1 for t in e["todos"]) for e in first["entries"][:-1])
+    assert all(not any(t["id"] == 1 for t in e["todos"]) for e in settled[-1:])
+    grep_like = [t for e in first["entries"] for t in e["todos"] if t["id"] == 1]
+    assert grep_like, "沉降后旧条目仍应能在 journal 历史快照里 grep 到"
+
+
 def test_command_shows_list() -> None:
     out = drive("session", {"steps": [{"action": "add", "text": "x"}]})
     assert out["command"] and "#1: x" in out["command"][0]

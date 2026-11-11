@@ -1,11 +1,18 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export type TodoStatus = "pending" | "in_progress" | "done";
-export type TodoItem = { id: number; text: string; status: TodoStatus };
+export type TodoItem = { id: number; text: string; status: TodoStatus; doneAt?: number };
 export type TodoState = { todos: TodoItem[]; nextId: number };
 export type TodoDetails = { action: string; error?: string } & TodoState;
 
 export const TODO_STATE_ENTRY = "todo-state";
+export const DONE_KEEP = 3;
+
+export function settleDone(todos: TodoItem[]): TodoItem[] {
+	const done = todos.filter((t) => t.status === "done").sort((a, b) => (a.doneAt ?? 0) - (b.doneAt ?? 0));
+	const drop = new Set(done.slice(0, Math.max(0, done.length - DONE_KEEP)).map((t) => t.id));
+	return todos.filter((t) => !drop.has(t.id));
+}
 
 export function markStatus(todos: TodoItem[], id: number, status: TodoStatus): TodoItem[] {
 	const target = todos.find((t) => t.id === id);
@@ -13,6 +20,8 @@ export function markStatus(todos: TodoItem[], id: number, status: TodoStatus): T
 	const next = todos.map((t) => ({ ...t }));
 	const hit = next.find((t) => t.id === id);
 	hit.status = status;
+	if (status === "done") hit.doneAt = Date.now();
+	else hit.doneAt = undefined;
 	if (status === "in_progress") {
 		for (const t of next) {
 			if (t.id !== id && t.status === "in_progress") t.status = "pending";
@@ -61,7 +70,7 @@ export default async function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "todo",
 		label: "Todo",
-		description: "计划步骤清单(状态经 custom entry 持久化,重启/branch/compact 后自动回放)。多步任务动手前先建单;开工一步前把它标 in_progress(同时刻仅一个,设置新的会自动把旧的退回 pending);完成即 done。行动: list / add(text) / status(id,status) / toggle(id) / clear。",
+		description: "计划步骤清单(状态经 custom entry 持久化,重启/branch/compact 后自动回放)。多步任务动手前先建单;开工一步前把它标 in_progress(同时刻仅一个,设置新的会自动把旧的退回 pending);完成即 done。已完条目只保留最近 3 条,更早的自动沉降——全史(含已沉降与已 clear)在本会话 jsonl 的 todo-state 条目里,跨会话历史在 ~/.pi/agent/sessions/ 下 grep todo-state 可回。行动: list / add(text) / status(id,status) / toggle(id) / clear。",
 		promptSnippet: "计划步骤清单",
 		promptGuidelines: ["Break multi-step work into todo items before starting; keep exactly one item in_progress while executing; mark done immediately after completion."],
 		parameters: Type.Object({
@@ -76,6 +85,7 @@ export default async function (pi: ExtensionAPI) {
 				details: { action: params.action, todos: [...todos], nextId, error },
 			});
 			const commit = (action: string, message: string): { content: { type: "text"; text: string }[]; details: TodoDetails } => {
+				todos = settleDone(todos);
 				ctx.sessionManager.appendEntry(TODO_STATE_ENTRY, { todos, nextId });
 				return { content: [{ type: "text", text: message }], details: { action, todos: [...todos], nextId } };
 			};
