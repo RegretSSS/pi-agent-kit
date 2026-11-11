@@ -30,6 +30,8 @@ def main() -> int:
         violations.append("reconstruct 未过滤 toolName===\"todo\" 的 toolResult——重放会吃到别的工具的 details")
     if "nextId" not in source:
         violations.append("缺 nextId 传递——重建后新增条目会撞 id")
+    if "parseTodos" not in source or "contentText" not in source:
+        violations.append("缺 content 文本兜底解析——jsonl 的 toolResult 不落盘 details(实测七个键无 details),重启/branch 重放只认 details 会拿到空清单")
     if violations:
         print(f"todo_single_in_progress_anchor: {len(violations)} 处违规")
         for v in violations:

@@ -33,6 +33,29 @@ def test_mark_status_missing_id_noop() -> None:
     assert out["todos"] == todos
 
 
+def test_reconstruct_falls_back_to_content_text() -> None:
+    branch = [
+        {"type": "message", "message": {"role": "toolResult", "toolName": "todo", "content": [{"type": "text", "text": "0/2 完成\n[ ] #1: first\n[>] #2: second ← 进行中"}]}},
+        {"type": "message", "message": {"role": "toolResult", "toolName": "todo", "content": [{"type": "text", "text": "1/2 完成\n[x] #1: first\n[>] #2: second ← 进行中"}]}},
+    ]
+    out = drive("reconstruct", {"branch": branch})
+    assert out["state"]["nextId"] == 3
+    assert {t["id"]: t["status"] for t in out["state"]["todos"]} == {1: "done", 2: "in_progress"}
+
+
+def test_parse_todos_roundtrip() -> None:
+    todos = [
+        {"id": 1, "text": "扫描全部文件", "status": "pending"},
+        {"id": 2, "text": "修 lint", "status": "in_progress"},
+        {"id": 3, "text": "提交", "status": "done"},
+    ]
+    text = drive("format", {"todos": todos})["text"]
+    out = drive("reconstruct", {"branch": [
+        {"type": "message", "message": {"role": "toolResult", "toolName": "todo", "content": [{"type": "text", "text": text}]}},
+    ]})
+    assert {t["id"]: (t["status"], t["text"]) for t in out["state"]["todos"]} == {1: ("pending", "扫描全部文件"), 2: ("in_progress", "修 lint"), 3: ("done", "提交")}
+
+
 def test_reconstruct_replays_latest_details() -> None:
     branch = [
         {"type": "message", "message": {"role": "toolResult", "toolName": "todo", "details": {"todos": [{"id": 1, "text": "a", "status": "pending"}], "nextId": 2}}},

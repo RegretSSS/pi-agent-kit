@@ -18,7 +18,27 @@ export function markStatus(todos: TodoItem[], id: number, status: TodoStatus): T
 	return next;
 }
 
-export function reconstructTodos(branch: { type: string; message?: { role?: string; toolName?: string; details?: unknown } }[]): { todos: TodoItem[]; nextId: number } {
+const TODO_LINE_RE = /^\[([ x>])] #(\d+): (.+?)(?: ← 进行中)?$/;
+
+export function parseTodos(text: string): TodoItem[] | null {
+	const items: TodoItem[] = [];
+	for (const line of text.split("\n")) {
+		const hit = TODO_LINE_RE.exec(line.trim());
+		if (!hit) continue;
+		const status = hit[1] === "x" ? "done" : hit[1] === ">" ? "in_progress" : "pending";
+		items.push({ id: Number(hit[2]), text: hit[3], status });
+	}
+	if (items.length === 0) return null;
+	return items;
+}
+
+function contentText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content.filter((b) => b && typeof b === "object" && (b as { type?: string }).type === "text").map((b) => (b as { text?: string }).text ?? "").join("\n");
+}
+
+export function reconstructTodos(branch: { type: string; message?: { role?: string; toolName?: string; details?: unknown; content?: unknown } }[]): { todos: TodoItem[]; nextId: number } {
 	let todos: TodoItem[] = [];
 	let nextId = 1;
 	for (const entry of branch) {
@@ -26,9 +46,15 @@ export function reconstructTodos(branch: { type: string; message?: { role?: stri
 		const msg = entry.message;
 		if (!msg || msg.role !== "toolResult" || msg.toolName !== "todo") continue;
 		const details = msg.details as TodoDetails | undefined;
-		if (details) {
+		if (details && details.todos) {
 			todos = details.todos;
 			nextId = details.nextId;
+			continue;
+		}
+		const parsed = parseTodos(contentText(msg.content));
+		if (parsed) {
+			todos = parsed;
+			nextId = Math.max(...parsed.map((t) => t.id)) + 1;
 		}
 	}
 	return { todos, nextId };
