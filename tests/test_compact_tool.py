@@ -17,6 +17,12 @@ def drive(scenario: str, payload: dict | None = None) -> dict:
     return json.loads(result.stdout)
 
 
+def test_wakeup_deferred_past_emit_window() -> None:
+    out = drive("wakeup", {"reason": "manual", "willRetry": False, "sessionFile": "/x.jsonl"})
+    assert out["sentSync"] == 0
+    assert len(out["sent"]) == 1
+
+
 def test_wakeup_uses_steer_delivery() -> None:
     out = drive("wakeup", {"reason": "threshold", "willRetry": False, "sessionFile": "/x.jsonl"})
     assert out["sentOptions"][0] == {"deliverAs": "steer"}

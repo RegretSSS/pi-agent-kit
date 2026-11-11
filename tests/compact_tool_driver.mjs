@@ -27,6 +27,8 @@ if (scenario === "instructions") {
 		{ reason: payload.reason ?? "threshold", willRetry: payload.willRetry ?? false },
 		{ sessionManager: { getSessionFile: () => payload.sessionFile ?? null } },
 	);
+	out.sentSync = sent.length;
+	await new Promise((resolve) => setTimeout(resolve, 5));
 	out.sent = sent.map((x) => x.text);out.sentOptions = sent.map((x) => x.options ?? null);
 } else {
 	throw new Error(`unknown scenario: ${scenario}`);
