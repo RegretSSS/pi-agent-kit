@@ -7,7 +7,6 @@ const FOLD_INDEX_SPEC = [
 	"</fold-index>",
 	"One line per major phase of the folded span.",
 	"If an earlier <fold-index> is present in the conversation, distill and merge its still-relevant lines into the new one so at most one fold-index stays alive.",
-	"If a todo list is active, reproduce its current todo tool output verbatim at the end of the summary so the list survives compaction.",
 ].join("\n");
 
 export function buildCompactInstructions(brief: string): string {

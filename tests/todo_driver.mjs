@@ -28,14 +28,22 @@ if (scenario === "mark-status") {
 		},
 	};
 	await factory(pi);
-	const branch = payload.branch ?? [];
-	const ctx = { sessionManager: { getBranch: () => branch } };
+	const entries = [];
+	const ctx = {
+		sessionManager: {
+			getBranch: () => payload.branch ?? [],
+			appendEntry: (customType, data) => {
+				entries.push({ customType, data });
+			},
+		},
+	};
 	if (handlers["session_start"]) await handlers["session_start"]({}, ctx);
 	for (const step of payload.steps ?? []) {
 		const result = await tools.todo.execute("t1", step, undefined, undefined, ctx);
 		out.steps = out.steps ?? [];
-		out.steps.push({ text: result.content[0].text, todos: result.details.todos.map((t) => `${t.id}:${t.status}`), error: result.details.error ?? null });
+		out.steps.push({ text: result.content[0].text, todos: result.details.todos.map((t) => [String(t.id), t.status]), error: result.details.error ?? null });
 	}
+	out.entries = entries.filter((e) => e.customType === "todo-state").map((e) => e.data);
 	out.command = commands["todos"] ? await (async () => {
 		const notes = [];
 		await commands["todos"].handler([], { ui: { notify: (text) => notes.push(text) } });
