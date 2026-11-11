@@ -18,7 +18,9 @@ def drive(scenario: str, payload: dict | None = None) -> dict:
 
 
 def test_wakeup_injected_after_compact() -> None:
-    out = drive("wakeup", {"reason": "threshold", "willRetry": False})
+    out = drive("wakeup", {"reason": "threshold", "willRetry": False, "sessionFile": "/home/x/sessions/2026-11-11.jsonl"})
+    assert "/home/x/sessions/2026-11-11.jsonl" in out["sent"][0]
+    assert "read/grep" in out["sent"][0]
     assert len(out["sent"]) == 1
     assert out["sent"][0].startswith("[compact 完成]")
     assert "fold-index" in out["sent"][0]
@@ -28,6 +30,12 @@ def test_wakeup_injected_after_compact() -> None:
 def test_wakeup_manual_reason_labeled() -> None:
     out = drive("wakeup", {"reason": "manual", "willRetry": False})
     assert "手动 /compact" in out["sent"][0]
+
+
+def test_wakeup_without_session_file_still_sent() -> None:
+    out = drive("wakeup", {"reason": "threshold", "willRetry": False, "sessionFile": None})
+    assert out["sent"][0].startswith("[compact 完成]")
+    assert "本会话文件" not in out["sent"][0]
 
 
 def test_wakeup_suppressed_on_retry() -> None:

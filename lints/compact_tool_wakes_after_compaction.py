@@ -24,6 +24,8 @@ def main() -> int:
             violations.append("sendUserMessage 被链式调用——ExtensionAPI 层 fire-and-forget 返回 undefined,.then 即 TypeError(D16 三坑之一)")
         if re.search(r"await\s+pi\.sendUserMessage", body):
             violations.append("await sendUserMessage——返回 undefined 的假承诺,直调即可")
+        if "getSessionFile" not in body:
+            violations.append("唤醒词未取 session 文件路径——压缩后模型不知道自己的 transcript 在哪,原文钻取无从谈起(CC 指路牌设计)")
         if "fold-index" not in body:
             violations.append("唤醒词缺 fold-index 重定位指引——醒来第一件事应按摘要索引恢复状态而非重新摸索")
     if not re.search(r"sendUserMessage", source) and handler:

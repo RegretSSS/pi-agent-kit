@@ -23,7 +23,10 @@ if (scenario === "instructions") {
 } else if (scenario === "wakeup") {
 	await factory(pi);
 	if (!handlers["session_compact"]) throw new Error("no session_compact handler");
-	await handlers["session_compact"]({ reason: payload.reason ?? "threshold", willRetry: payload.willRetry ?? false });
+	await handlers["session_compact"](
+		{ reason: payload.reason ?? "threshold", willRetry: payload.willRetry ?? false },
+		{ sessionManager: { getSessionFile: () => payload.sessionFile ?? null } },
+	);
 	out.sent = sent;
 } else {
 	throw new Error(`unknown scenario: ${scenario}`);
