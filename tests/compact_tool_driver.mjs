@@ -13,8 +13,8 @@ const pi = {
 		handlers[event] = handler;
 	},
 	registerTool: () => {},
-	sendUserMessage: (text) => {
-		sent.push(text);
+	sendUserMessage: (text, options) => {
+		sent.push({ text, options });
 	},
 };
 
@@ -27,7 +27,7 @@ if (scenario === "instructions") {
 		{ reason: payload.reason ?? "threshold", willRetry: payload.willRetry ?? false },
 		{ sessionManager: { getSessionFile: () => payload.sessionFile ?? null } },
 	);
-	out.sent = sent;
+	out.sent = sent.map((x) => x.text);out.sentOptions = sent.map((x) => x.options ?? null);
 } else {
 	throw new Error(`unknown scenario: ${scenario}`);
 }

@@ -66,6 +66,6 @@ export default async function (pi: ExtensionAPI) {
 		const trigger = event.reason === "manual" ? "手动 /compact" : event.reason === "overflow" ? "溢出恢复" : "水位触发";
 		const sessionFile = ctx.sessionManager.getSessionFile();
 		const trace = sessionFile ? ` 原文全量在本会话文件 ${sessionFile},需要折叠前的细节时直接 read/grep 它。` : "";
-		pi.sendUserMessage(`[compact 完成] 上下文已整理(${trigger})。按摘要头部的 fold-index 重新定位任务状态,继续未完成的工作;若已到自然边界,向用户收尾汇报。${trace}`);
+		pi.sendUserMessage(`[compact 完成] 上下文已整理(${trigger})。按摘要头部的 fold-index 重新定位任务状态,继续未完成的工作;若已到自然边界,向用户收尾汇报。${trace}`, { deliverAs: "steer" });
 	});
 }
