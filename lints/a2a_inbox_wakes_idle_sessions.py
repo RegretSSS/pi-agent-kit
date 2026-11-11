@@ -29,8 +29,10 @@ def main() -> int:
         catch_at = window.find("catch")
         if catch_at < 0:
             violations.append("sendUserMessage 未包同步 try-catch——运行时未就绪时 action 方法同步 throw,裸调会在加载期炸 pi(11-07 事故第二雷)")
-        elif re.search(r"rcpt|openSync", window[catch_at:catch_at + 400]):
-            violations.append("catch 分支里写 rcpt——发送已失败还标已送达,信会被跳过;正确语义是留队由周期重扫幂等补投")
+        else:
+            catch_block = re.search(r"catch\s*\{([^{}]*)\}", window[catch_at:], re.DOTALL)
+            if catch_block and re.search(r"rcpt|openSync", catch_block.group(1)):
+                violations.append("catch 分支里写 rcpt——发送已失败还标已送达,信会被跳过;正确语义是留队由周期重扫幂等补投")
     if not re.search(r"setInterval\(\s*scanQueue", source):
         violations.append("缺少 setInterval(scanQueue) 周期重扫——fs.watch 单独不可靠(事件丢失/启动期遗留),5s 幂等重扫是兜底(11-07 事故第二雷的解)")
     for violation in violations:

@@ -5,6 +5,9 @@ import * as path from "node:path";
 
 const HEARTBEAT_MS = 20000;
 const RESOLVE_MS = 5000;
+const LANDING_CONFIRM_MS = 1500;
+const LANDING_MAX_ATTEMPTS = 36;
+const LANDING_MARKER_CHARS = 60;
 
 function mailboxRoot(): string {
   return process.env.A2A_MAILBOX_ROOT || path.join(os.homedir(), ".agents-mailbox");
@@ -68,6 +71,10 @@ function targetedAtOtherInstance(envelope: Record<string, unknown>, pane: string
   return pane !== "" && target !== pane;
 }
 
+type BranchLike = {
+  getBranch(): { type: string; message?: { role?: string; content?: { type: string; text?: string }[] } }[];
+};
+
 export default function (pi: ExtensionAPI) {
   const root = mailboxRoot();
   let agentId: string | null = null;
@@ -75,8 +82,29 @@ export default function (pi: ExtensionAPI) {
   let heartbeat: ReturnType<typeof setInterval> | null = null;
   let resolver: ReturnType<typeof setInterval> | null = null;
   let rescuer: ReturnType<typeof setInterval> | null = null;
+  let branch: BranchLike | null = null;
   const injected = new Set<string>();
   const inflight = new Set<string>();
+  const attempts = new Map<string, number>();
+
+  function wakeLanded(marker: string): boolean {
+    if (!branch) {
+      return false;
+    }
+    try {
+      for (const entry of branch.getBranch()) {
+        if (entry.type !== "message" || entry.message?.role !== "user") {
+          continue;
+        }
+        for (const part of entry.message.content ?? []) {
+          if (part.type === "text" && typeof part.text === "string" && part.text.includes(marker)) {
+            return true;
+          }
+        }
+      }
+    } catch {}
+    return false;
+  }
 
   function agentDir(): string {
     return path.join(root, "native-inbox", agentId as string);
@@ -120,22 +148,41 @@ export default function (pi: ExtensionAPI) {
       injected.add(msgId);
       return;
     }
+    const marker = wakeText.slice(0, LANDING_MARKER_CHARS);
+    if (wakeLanded(marker)) {
+      markDelivered(msgId, rcpt);
+      return;
+    }
+    if ((attempts.get(msgId) ?? 0) >= LANDING_MAX_ATTEMPTS) {
+      markDelivered(msgId, rcpt);
+      return;
+    }
+    attempts.set(msgId, (attempts.get(msgId) ?? 0) + 1);
     inflight.add(msgId);
-    const markDelivered = (): void => {
-      try {
-        const handle = fs.openSync(rcpt, "wx");
-        fs.writeSync(handle, JSON.stringify({ ts: Date.now() / 1000 }));
-        fs.closeSync(handle);
-        injected.add(msgId);
-      } catch {}
-      inflight.delete(msgId);
-    };
     try {
       pi.sendUserMessage(wakeText, { deliverAs: "steer" });
-      markDelivered();
     } catch {
       inflight.delete(msgId);
+      return;
     }
+    setTimeout(() => {
+      if (wakeLanded(marker)) {
+        markDelivered(msgId, rcpt);
+      } else {
+        inflight.delete(msgId);
+      }
+    }, LANDING_CONFIRM_MS);
+  }
+
+  function markDelivered(msgId: string, rcpt: string): void {
+    try {
+      const handle = fs.openSync(rcpt, "wx");
+      fs.writeSync(handle, JSON.stringify({ ts: Date.now() / 1000 }));
+      fs.closeSync(handle);
+      injected.add(msgId);
+    } catch {}
+    inflight.delete(msgId);
+    attempts.delete(msgId);
   }
 
   function scanQueue(): void {
@@ -188,6 +235,10 @@ export default function (pi: ExtensionAPI) {
   rescuer = setInterval(scanQueue, RESOLVE_MS);
   rescuer.unref?.();
   tryResolve();
+
+  pi.on("session_start", (_event, ctx) => {
+    branch = ctx.sessionManager as unknown as BranchLike;
+  });
 
   pi.on("session_shutdown", () => {
     if (watcher) {
