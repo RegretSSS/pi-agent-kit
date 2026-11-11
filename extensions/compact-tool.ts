@@ -47,10 +47,14 @@ export default async function (pi: ExtensionAPI) {
 			"Schedule a compaction of this conversation at the next turn boundary,",
 			"keeping only what the brief specifies. Call this yourself at natural work",
 			"boundaries when context is getting heavy: long task finished, milestone",
-			"committed, before switching to an unrelated topic. Threshold auto-compaction",
-			"remains only as a fallback; this tool lets you pick the timing and content.",
-			"The generated summary starts with a <fold-index> header (topic | span | key fact | trace)",
-			"so later turns can navigate back into folded history via history_search/history_read.",
+			"committed, before switching to an unrelated topic. Watch the [ctx ...] gauge line",
+			"in tool results: at 30% it warns to time the compaction, at 50% it demands one",
+			"immediately — calling this proactively keeps your own context quality; threshold",
+			"auto-compaction remains only as a last-resort fallback. After the compaction",
+			"completes you receive a [compact 完成] message: re-orient via the fold-index and",
+			"resume the unfinished work before reporting back. The generated summary starts",
+			"with a <fold-index> header (topic | span | key fact | trace) so later turns can",
+			"navigate back into folded history via history_search/history_read.",
 		].join(" "),
 		parameters: Type.Object({
 			brief: Type.String({
@@ -79,5 +83,11 @@ export default async function (pi: ExtensionAPI) {
 				if (ctx.hasUI) ctx.ui.notify(`compact failed: ${error.message}`, "error");
 			},
 		});
+	});
+
+	pi.on("session_compact", async (event) => {
+		if (event.willRetry) return;
+		const trigger = event.reason === "manual" ? "手动 /compact" : event.reason === "overflow" ? "溢出恢复" : "水位触发";
+		pi.sendUserMessage(`[compact 完成] 上下文已整理(${trigger})。按摘要头部的 fold-index 重新定位任务状态,继续未完成的工作;若已到自然边界,向用户收尾汇报。`);
 	});
 }
