@@ -1,18 +1,6 @@
-import { stat } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const FOLD_INDEX_WITH_HISTORY = [
-	"In addition, the summary MUST start with a fold-index header:",
-	"<fold-index>",
-	'- <topic> | <mNNNNN-mNNNNN span> | <key fact, keep under 40 chars> | trace: history_search("<topic>")',
-	"</fold-index>",
-	"One line per major phase of the folded span. The trace column is the single drill-down entry: history_search retrieves the compressed block, history_read reads it.",
-	"If an earlier <fold-index> is present in the conversation, distill and merge its still-relevant lines into the new one so at most one fold-index stays alive.",
-].join("\n");
-
-const FOLD_INDEX_WITHOUT_HISTORY = [
+const FOLD_INDEX_SPEC = [
 	"In addition, the summary MUST start with a fold-index header:",
 	"<fold-index>",
 	"- <topic> | <mNNNNN-mNNNNN span or turn range> | <key fact, keep under 40 chars>",
@@ -21,24 +9,13 @@ const FOLD_INDEX_WITHOUT_HISTORY = [
 	"If an earlier <fold-index> is present in the conversation, distill and merge its still-relevant lines into the new one so at most one fold-index stays alive.",
 ].join("\n");
 
-export function buildCompactInstructions(brief: string, historyActive: boolean): string {
-	const indexSpec = historyActive ? FOLD_INDEX_WITH_HISTORY : FOLD_INDEX_WITHOUT_HISTORY;
-	return `${brief}\n\n${indexSpec}`;
-}
-
-const MERGED_BRIEF_CODEPOINTS = 4000;
-
-async function historyLikelyActive(): Promise<boolean> {
-	const db = join(homedir(), ".local/share/billion-context/sessions/index.db");
-	return stat(db).then(
-		() => true,
-		() => false,
-	);
+export function buildCompactInstructions(brief: string): string {
+	return `${brief}\n\n${FOLD_INDEX_SPEC}`;
 }
 
 export default async function (pi: ExtensionAPI) {
 	const { Type } = await import("typebox");
-	let pending: { brief: string; historyActive: boolean } | null = null;
+	let pending: string | null = null;
 
 	pi.registerTool({
 		name: "compact",
@@ -53,8 +30,8 @@ export default async function (pi: ExtensionAPI) {
 			"auto-compaction remains only as a last-resort fallback. After the compaction",
 			"completes you receive a [compact 完成] message: re-orient via the fold-index and",
 			"resume the unfinished work before reporting back. The generated summary starts",
-			"with a <fold-index> header (topic | span | key fact | trace) so later turns can",
-			"navigate back into folded history via history_search/history_read.",
+			"with a <fold-index> header (topic | span | key fact) so later turns can navigate",
+			"back into folded history by scanning the index lines.",
 		].join(" "),
 		parameters: Type.Object({
 			brief: Type.String({
@@ -62,9 +39,8 @@ export default async function (pi: ExtensionAPI) {
 			}),
 		}),
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const historyActive = await historyLikelyActive();
-			const merged = pending === null ? params.brief : `${pending.brief}\n---\n${params.brief}`;
-			pending = { brief: Array.from(merged).slice(-MERGED_BRIEF_CODEPOINTS).join(""), historyActive };
+			const merged = pending === null ? params.brief : `${pending}\n---\n${params.brief}`;
+			pending = Array.from(merged).slice(-4000).join("");
 			return {
 				content: [{ type: "text", text: "compaction scheduled for the next turn boundary" }],
 				details: {},
@@ -74,10 +50,10 @@ export default async function (pi: ExtensionAPI) {
 
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (pending === null) return;
-		const { brief, historyActive } = pending;
+		const brief = pending;
 		pending = null;
 		ctx.compact({
-			customInstructions: buildCompactInstructions(brief, historyActive),
+			customInstructions: buildCompactInstructions(brief),
 			onError: (error) => {
 				console.error(`compact failed: ${error.message}`);
 				if (ctx.hasUI) ctx.ui.notify(`compact failed: ${error.message}`, "error");

@@ -36,7 +36,7 @@ def test_wakeup_suppressed_on_retry() -> None:
 
 
 def test_instructions_carry_gauge_contract() -> None:
-    out = drive("instructions", {"brief": "keep task state", "historyActive": True})
+    out = drive("instructions", {"brief": "keep task state"})
     assert "keep task state" in out["text"]
     assert "<fold-index>" in out["text"]
     source = (REPO / "extensions" / "compact-tool.ts").read_text(encoding="utf-8")

@@ -192,15 +192,15 @@ def test_recall_hits_then_dedupe_and_term_floor(tmp_path) -> None:
 
 
 def test_append_mode_merges_into_existing(tmp_path) -> None:
-    drive(tmp_path, "save", {"name": "bili-ops", "description": "压缩代理口径", "type": "reference", "body": "代理 127.0.0.1:18787"})
-    out = drive(tmp_path, "save", {"name": "bili-ops", "description": "压缩代理口径", "type": "reference", "body": "db 在 ~/.local/share/billion-context/", "mode": "append"})
+    drive(tmp_path, "save", {"name": "driver-ops", "description": "驱动口径", "type": "reference", "body": "代理 127.0.0.1:3425"})
+    out = drive(tmp_path, "save", {"name": "driver-ops", "description": "驱动口径", "type": "reference", "body": "db 在 ~/.local/share/kit-driver/", "mode": "append"})
     assert out["outcome"]["status"] == "saved"
     assert out["outcome"]["updated"] is True
     assert out["outcome"]["merged"] == "appended"
-    body = drive(tmp_path, "read", {"name": "bili-ops"})["body"]
-    assert "127.0.0.1:18787" in body
-    assert "db 在 ~/.local/share/billion-context/" in body
-    assert body.index("18787") < body.index("billion-context")
+    body = drive(tmp_path, "read", {"name": "driver-ops"})["body"]
+    assert "127.0.0.1:3425" in body
+    assert "db 在 ~/.local/share/kit-driver/" in body
+    assert body.index("3425") < body.index("kit-driver")
 
 
 def test_append_on_missing_name_creates_with_dup_gate(tmp_path) -> None:

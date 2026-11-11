@@ -19,7 +19,7 @@ const pi = {
 };
 
 if (scenario === "instructions") {
-	out.text = buildCompactInstructions(payload.brief ?? "b", payload.historyActive ?? true);
+	out.text = buildCompactInstructions(payload.brief ?? "b");
 } else if (scenario === "wakeup") {
 	await factory(pi);
 	if (!handlers["session_compact"]) throw new Error("no session_compact handler");
