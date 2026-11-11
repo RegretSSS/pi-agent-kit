@@ -151,3 +151,9 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D19-3 recall 自动召回(用户设计:扫 output,trigram 命中即拉入,上下文不出现第二次)**:before_agent_start(messageType==="user" 限定,subagent/custom 不召回)取 trigger=本轮用户输入+尾部 assistant(各截 1500 字符),FTS trigram 混搜两桶,termsHit>=2 门槛,excludeKeys 会话内去重,命中≤3 条以 customType=agent-memory-recall 消息注入(display:false)——走消息流不碰 system prompt(cache 友好;pi sections diff 机制虽也 cache 友好,但消息通道与 CC system-reminder 同构且不累积 patch);search 既有 markReferenced 使召回顺手养权重。
 - **D19-4 缓存指纹修复(1/2 疑案破案)**:listEntries 缓存探测原为目录 mtime——writeFile 原地更新已存在文件不改父目录 mtime,他进程的增量更新对本进程永不可见(实证:项目桶 2 文件索引只报 1 条);改文件级指纹(readdir+逐文件 mtimeMs 聚合)。
 - **D19-5 误放存量迁移**:scripts/migrate-misplaced-global-memories.mjs(dry-run 默认,--apply 先备份 memory.bak-d19,幂等)——18 条 type:project 按名字前缀迁对应项目桶(backend-*/cc-*→EngAssistantBackend 15 条,aicontest-*→aicontest 3 条),dry-run 全映射无遗漏;--apply 待用户批准。配套 lints 三条(index 行截断/recall 去重护栏/文件级指纹)。
+
+## D20(compact 唤醒闭环 + bili 残留清除,2026-11-11)
+
+- **D20-1 compact 唤醒**:session_compact(非 willRetry)经 sendUserMessage 直调注入『[compact 完成](手动/溢出/水位)』唤醒词——按 fold-index 重定位任务状态、续作未完成工作、自然边界则收尾;willRetry 早退防 overflow 重试输入被污染;description 显式接通 gauge 契约(30% 择机/50% 立即)。链路:gauge 提示→compact(brief)→fold-index 摘要→唤醒→重定位续作。
+- **D20-2 bili 残留清除**:history.ts 扩展退役(bili db 失去数据源,钻取成死链)+其测试/lint 删;compact-tool 单模板化(去 trace 列与 historyLikelyActive 探测);盘上五处 888M 全删(npm 包×2/config/cache/local/share)+部署侧 history.ts;README 移除 bili 致谢与互补提法。工具表再省 1,710 字符。
+- **D20-3 footer 百分比取整**:透传 usage.percent 浮点改 Math.round。
