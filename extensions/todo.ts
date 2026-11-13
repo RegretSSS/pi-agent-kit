@@ -86,7 +86,11 @@ export default async function (pi: ExtensionAPI) {
 			});
 			const commit = (action: string, message: string): { content: { type: "text"; text: string }[]; details: TodoDetails } => {
 				todos = settleDone(todos);
-				ctx.sessionManager.appendEntry(TODO_STATE_ENTRY, { todos, nextId });
+				try {
+					pi.appendEntry(TODO_STATE_ENTRY, { todos, nextId });
+				} catch (error) {
+					return fail(`状态落盘失败: ${error instanceof Error ? error.message : String(error)}`);
+				}
 				return { content: [{ type: "text", text: message }], details: { action, todos: [...todos], nextId } };
 			};
 			switch (params.action) {

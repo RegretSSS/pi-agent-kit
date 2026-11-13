@@ -16,6 +16,7 @@ if (scenario === "mark-status") {
 	const handlers = {};
 	const tools = {};
 	const commands = {};
+	const entries = [];
 	const pi = {
 		on: (event, handler) => {
 			handlers[event] = handler;
@@ -26,15 +27,15 @@ if (scenario === "mark-status") {
 		registerCommand: (name, def) => {
 			commands[name] = def;
 		},
+		appendEntry: (customType, data) => {
+			if (payload.appendFails) throw new Error("mock append reject");
+			entries.push({ customType, data });
+		},
 	};
 	await factory(pi);
-	const entries = [];
 	const ctx = {
 		sessionManager: {
 			getBranch: () => payload.branch ?? [],
-			appendEntry: (customType, data) => {
-				entries.push({ customType, data });
-			},
 		},
 	};
 	if (handlers["session_start"]) await handlers["session_start"]({}, ctx);

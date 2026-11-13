@@ -145,6 +145,14 @@ def test_settled_history_still_in_journal() -> None:
     assert grep_like, "沉降后旧条目仍应能在 journal 历史快照里 grep 到"
 
 
+def test_append_failure_returns_error_not_crash() -> None:
+    out = drive("session", {"appendFails": True, "steps": [{"action": "add", "text": "x"}, {"action": "list"}]})
+    assert "状态落盘失败" in out["steps"][0]["text"]
+    assert out["steps"][0]["text"].startswith("Error")
+    assert out["entries"] == []
+    assert "1/1 完成" not in out["steps"][1]["text"] or out["steps"][1]["todos"] == [["1", "pending"]]
+
+
 def test_command_shows_list() -> None:
     out = drive("session", {"steps": [{"action": "add", "text": "x"}]})
     assert out["command"] and "#1: x" in out["command"][0]
