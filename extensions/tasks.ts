@@ -271,7 +271,10 @@ export class TaskRegistry {
 
 	async nextId(): Promise<string> {
 		const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
-		const taken = new Set((await this.list()).map((task) => task.id));
+		const taken = new Set<string>();
+		for (const id of (await this.list()).map((task) => task.id)) {
+			taken.add(id.startsWith(`${stamp}-`) ? id.split("-").slice(0, 2).join("-") : id);
+		}
 		let seq = 1;
 		while (taken.has(`${stamp}-${seq}`)) seq += 1;
 		for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -358,6 +361,29 @@ export class TaskRegistry {
 
 	private shrinkInFlight = new Set<string>();
 
+	async sweepOrphanClaims(maxAgeMs: number = 3600_000): Promise<number> {
+		let names: string[] = [];
+		try {
+			names = await readdir(this.root);
+		} catch {
+			return 0;
+		}
+		let removed = 0;
+		for (const name of names) {
+			if (!name.endsWith(".claim")) continue;
+			const id = name.slice(0, -".claim".length);
+			if (this.tasks.has(id)) continue;
+			const path = join(this.root, name);
+			try {
+				const info = await stat(path);
+				if (Date.now() - info.mtimeMs < maxAgeMs) continue;
+				await rm(path, { force: true });
+				removed += 1;
+			} catch {}
+		}
+		return removed;
+	}
+
 	async gcExpired(): Promise<number> {
 		await this.refreshFromJournal();
 		const cutoff = Date.now() - TASK_TTL_MS;
@@ -387,6 +413,11 @@ export default async function (pi: ExtensionAPI) {
 
 function watchChild(id: string, child: ChildProcess): ChildEntry {
 		const entry: ChildEntry = { child, exited: false, exitCode: null, exitSignal: null };
+		if (child.exitCode !== null || child.signalCode !== null) {
+			entry.exited = true;
+			entry.exitCode = child.exitCode;
+			entry.exitSignal = child.signalCode;
+		}
 		child.on("exit", (code, signal) => {
 			entry.exited = true;
 			entry.exitCode = code;
@@ -637,6 +668,7 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 		sessionIdle = () => ctx.isIdle();
 		await registry.ensureLoaded();
 		await registry.reapDeadPids(new Set(children.keys()));
+		await registry.sweepOrphanClaims();
 		await registry.gcExpired();
 		if (!pollTimer) {
 			pollTimer = setInterval(() => {

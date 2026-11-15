@@ -24,8 +24,8 @@ def main() -> int:
             violations.append("nextId 缺随机后缀——stamp+seq 相同时纯靠 claim 冲突重试,后缀把冲突概率压到忽略量级")
     if not re.search(r'TASK_ID_SHAPE = /^\\d\{14\}-\\d\+\(\\?\[:-\]\[a-z0-9\]\{1,8\}\)\?\$/', source) and "-[a-z0-9]{1,8}" not in source:
         violations.append("TASK_ID_SHAPE 未放行带后缀 id——新 id 被 journalEventPlausible 拒收,task_create 直接坏")
-    if re.search(r'watchChild\(id, child\);\s*\n\s*await logHandle\.close\(\);\s*\n\s*const record = await registry\.recordCreate', source):
-        violations.append("watchChild 先于 recordCreate——spawn 与落盘之间 sweep 收割时 registry.get(id) 为 undefined,真实退出码连 entry 一起被丢(P2#5);顺序必须 recordCreate 在前")
+    if not re.search(r"child\.exitCode !== null \|\| child\.signalCode !== null", source):
+        violations.append("watchChild 挂 listener 前缺 exitCode/signalCode 预检——recordCreate(多个 fs await)之后才挂 listener,子进程快速退出时 exit 事件发给零监听者被丢,且 reap 被 skipIds 跳过,任务本会话内永远 running(循环审查 r3 P1:噪声下 47% 命中);ChildProcess 的 exitCode/signalCode 属性在无监听者时仍被赋值,预检即闭合")
     if violations:
         print(f"task_id_claim_atomic: {len(violations)} 处违规")
         for v in violations:
