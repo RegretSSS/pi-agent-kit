@@ -136,3 +136,20 @@ def test_output_wait_real_log_growth(tmp_path) -> None:
     assert out["result"]["elapsedMs"] >= 250
     quiet = drive(tmp_path, "output-wait", {"waitMs": 400})
     assert quiet["result"]["changed"] is False and quiet["result"]["content"] == ""
+
+
+def test_exit_signal_survives_reload(tmp_path) -> None:
+    out = drive(tmp_path, "exit-signal", {})
+    assert out["reloadSignal"] == "SIGTERM"
+    assert out["reloadCode"] is None
+    assert out["text"] == "signal:SIGTERM"
+    assert out["plausible"] is True
+
+
+def test_orphan_detection_and_idempotent_mark(tmp_path) -> None:
+    out = drive(tmp_path, "orphan", {})
+    assert out["foreignWhileOwnerAlive"] == []
+    assert out["ownExcluded"] == 0
+    assert len(out["foreignAfterOwnerDeath"]) == 1
+    assert out["orphanIds"] == out["foreignAfterOwnerDeath"]
+    assert out["journalOrphanEvents"] == 1

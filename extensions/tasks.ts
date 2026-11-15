@@ -31,17 +31,20 @@ export type TaskRecord = {
 	exitCode: number | null;
 	logBase: number;
 	exitAt?: string;
+	exitSignal?: string;
+	orphanAt?: string;
 	procStart?: string;
 	ownerPid?: number;
 };
 
 type TaskEvent =
 	| { kind: "created"; record: TaskRecord }
-	| { kind: "exit"; id: string; exitCode: number | null; at: string }
+	| { kind: "exit"; id: string; exitCode: number | null; signal?: string | null; at: string }
+	| { kind: "orphan"; id: string; at: string }
 	| { kind: "logrotate"; id: string; logBase: number }
 	| { kind: "gc"; ids: string[] };
 
-type ChildEntry = { child: ChildProcess; exited: boolean; exitCode: number | null };
+type ChildEntry = { child: ChildProcess; exited: boolean; exitCode: number | null; exitSignal: string | null };
 
 export function procStartTicks(pid: number): string | undefined {
 	try {
@@ -105,6 +108,12 @@ export function parseLogTail(text: string, chars: number): string {
 const TASK_ID_SHAPE = /^\d{14}-\d+$/;
 const PID_CEILING = 4_194_304;
 
+export function exitText(task: TaskRecord): string {
+	if (task.exitCode !== null) return `code=${task.exitCode}`;
+	if (task.exitSignal) return `signal:${task.exitSignal}`;
+	return "unknown(reaped,无退出观测)";
+}
+
 export function journalEventPlausible(event: TaskEvent): boolean {
 	if (event.kind === "created") {
 		const record = event.record;
@@ -118,7 +127,7 @@ export function journalEventPlausible(event: TaskEvent): boolean {
 		if (record.procStart !== undefined && typeof record.procStart !== "string") return false;
 		return true;
 	}
-	if (event.kind === "exit" || event.kind === "logrotate") {
+	if (event.kind === "exit" || event.kind === "logrotate" || event.kind === "orphan") {
 		return TASK_ID_SHAPE.test(String(event.id));
 	}
 	if (event.kind === "gc") {
@@ -144,11 +153,15 @@ export class TaskRegistry {
 	private apply(event: TaskEvent): void {
 		if (event.kind === "created") {
 			this.tasks.set(event.record.id, { ...event.record });
+		} else if (event.kind === "orphan") {
+			const task = this.tasks.get(event.id);
+			if (task && task.state === "running" && !task.orphanAt) task.orphanAt = event.at;
 		} else if (event.kind === "exit") {
 			const task = this.tasks.get(event.id);
 			if (task && task.state === "running") {
 				task.state = "exited";
 				task.exitCode = event.exitCode;
+				task.exitSignal = event.signal ?? undefined;
 				task.exitAt = event.at;
 			}
 		} else if (event.kind === "logrotate") {
@@ -266,8 +279,26 @@ export class TaskRegistry {
 		return record;
 	}
 
-	async markExit(id: string, exitCode: number | null): Promise<void> {
-		await this.append({ kind: "exit", id, exitCode, at: new Date().toISOString() });
+	async markExit(id: string, exitCode: number | null, signal: string | null = null): Promise<void> {
+		await this.append({ kind: "exit", id, exitCode, signal, at: new Date().toISOString() });
+	}
+
+	async markOrphan(id: string): Promise<void> {
+		const task = this.tasks.get(id);
+		if (!task || task.state !== "running" || task.orphanAt) return;
+		await this.append({ kind: "orphan", id, at: new Date().toISOString() });
+	}
+
+	livingForeignTasks(): TaskRecord[] {
+		const out: TaskRecord[] = [];
+		for (const task of this.tasks.values()) {
+			if (task.state !== "running" || task.orphanAt) continue;
+			if (task.ownerPid === undefined || task.ownerPid === process.pid) continue;
+			if (this.ownerAlive(task.ownerPid)) continue;
+			if (!this.processAlive(task)) continue;
+			out.push(task);
+		}
+		return out;
 	}
 
 	logPath(id: string): string {
@@ -339,11 +370,12 @@ export default async function (pi: ExtensionAPI) {
 	const children = new Map<string, ChildEntry>();
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-	function watchChild(id: string, child: ChildProcess): ChildEntry {
-		const entry: ChildEntry = { child, exited: false, exitCode: null };
-		child.on("exit", (code) => {
+function watchChild(id: string, child: ChildProcess): ChildEntry {
+		const entry: ChildEntry = { child, exited: false, exitCode: null, exitSignal: null };
+		child.on("exit", (code, signal) => {
 			entry.exited = true;
 			entry.exitCode = code;
+			entry.exitSignal = signal;
 		});
 		child.on("error", () => {
 			entry.exited = true;
@@ -366,7 +398,7 @@ export default async function (pi: ExtensionAPI) {
 		for (const task of tasks) {
 			const log = await registry.readLog(task.id);
 			const tail = log ? parseLogTail(log.subarray(Math.max(0, log.length - 8192)).toString("utf8"), NOTIFY_TAIL_CHARS) : "";
-			lines.push(`[${task.id}] ${task.name} exit=${task.exitCode ?? "unknown"} tail: ${tail}`);
+			lines.push(`[${task.id}] ${task.name} exit=${exitText(task)} tail: ${tail}`);
 		}
 		pi.sendMessage(
 			{ customType: "task-notify", content: `后台任务结束 ${lines.length} 条:\n${lines.join("\n")}`, display: true },
@@ -383,16 +415,27 @@ export default async function (pi: ExtensionAPI) {
 			const task = registry.get(id);
 			if (!task) continue;
 			if (task.state === "running") {
-				await registry.markExit(id, entry.exitCode);
+				await registry.markExit(id, entry.exitCode, entry.exitSignal);
 			}
 			finished.push(registry.get(id)!);
 		}
 		const reaped = await registry.reapDeadPids();
+		const orphaned = await registry.livingForeignTasks();
+		for (const task of orphaned) {
+			await registry.markOrphan(task.id);
+		}
 		await registry.shrinkOversizedLogs();
 		for (const task of [...finished, ...reaped]) {
 			await registry.shrinkTask(task);
 		}
 		await notifyFinished([...finished, ...reaped]);
+		if (orphaned.length > 0) {
+			const orphanLines = orphaned.map((task) => `[${task.id}] ${task.name} pid=${task.pid} owner=${task.ownerPid}已死,任务仍存活`);
+			pi.sendMessage(
+				{ customType: "task-notify", content: `孤儿任务告警 ${orphanLines.length} 条(父进程已退出,任务仍在跑,请接管或 task_kill):\n${orphanLines.join("\n")}`, display: true },
+				{ triggerTurn: true },
+			);
+		}
 	}
 
 	pi.registerTool({
@@ -426,7 +469,6 @@ export default async function (pi: ExtensionAPI) {
 				detached: true,
 				stdio: ["ignore", logHandle.fd, logHandle.fd],
 			});
-			child.unref();
 			watchChild(id, child);
 			await logHandle.close();
 			const record = await registry.recordCreate(id, params.cmd, cwd, (params.name ?? params.cmd.slice(0, 40)).slice(0, 200), child.pid ?? 0);
@@ -549,7 +591,12 @@ export default async function (pi: ExtensionAPI) {
 			if (tasks.length === 0) {
 				return { content: [{ type: "text", text: "无后台任务" }], details: { tasks: [] } };
 			}
-			const lines = tasks.map((task) => `${task.state.padEnd(7)} ${task.id} pid=${task.pid} exit=${task.exitCode ?? "-"} ${task.name}`);
+			const lines = tasks.map((task) => {
+				const owner = task.ownerPid === undefined || task.ownerPid === process.pid ? "own" : `owner=${task.ownerPid}`;
+				const flag = task.orphanAt ? " [orphan]" : "";
+				const exit = task.state === "exited" ? ` exit=${exitText(task)}` : "";
+				return `${task.state.padEnd(7)} ${task.id} pid=${task.pid} ${owner}${flag}${exit} ${task.name}`;
+			});
 			return { content: [{ type: "text", text: lines.join("\n") }], details: { tasks: tasks.map((task) => task.id) } };
 		},
 	});

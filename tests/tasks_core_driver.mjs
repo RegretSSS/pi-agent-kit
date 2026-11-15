@@ -15,8 +15,45 @@ switch (scenario) {
 		break;
 	}
 	case "mark-exit": {
-		await registry.markExit(payload.id, payload.exitCode ?? 0);
+		await registry.markExit(payload.id, payload.exitCode ?? 0, payload.signal ?? null);
 		out.ok = true;
+		break;
+	}
+	case "exit-signal": {
+		const id = await registry.nextId();
+		await registry.recordCreate(id, "sig", root, "sig-test", 4194303);
+		await registry.markExit(id, null, "SIGTERM");
+		const viewer = new TaskRegistry(root);
+		const task = await viewer.find(id);
+		const { exitText } = await import("../extensions/tasks.ts");
+		out.reloadSignal = task.exitSignal ?? null;
+		out.reloadCode = task.exitCode;
+		out.text = exitText(task);
+		out.plausible = (await import("../extensions/tasks.ts")).journalEventPlausible({ kind: "orphan", id });
+		break;
+	}
+	case "orphan": {
+		const { spawn: sp } = await import("node:child_process");
+		const aliveOwner = sp("sleep", ["8"], { stdio: "ignore" });
+		const realTask = sp("sleep", ["8"], { stdio: "ignore" });
+		const foreignId = await registry.nextId();
+		await registry.recordCreate(foreignId, "orphan-cand", root, "orphan-candidate", realTask.pid ?? 0, aliveOwner.pid ?? 0);
+		const ownId = await registry.nextId();
+		await registry.recordCreate(ownId, "own", root, "own-task", 4194303);
+		await registry.list();
+		out.foreignWhileOwnerAlive = registry.livingForeignTasks().map((t) => t.id);
+		out.ownExcluded = registry.livingForeignTasks().length;
+		aliveOwner.kill();
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		out.foreignAfterOwnerDeath = registry.livingForeignTasks().map((t) => t.id);
+		await registry.markOrphan(foreignId);
+		await registry.markOrphan(foreignId);
+		const viewer = new TaskRegistry(root);
+		const seen = new Set((await viewer.list()).filter((t) => t.orphanAt).map((t) => t.id));
+		out.orphanIds = [...seen];
+		const journalText = await (await import("node:fs/promises")).readFile(`${root}/tasks.jsonl`, "utf8");
+		out.journalOrphanEvents = (journalText.match(/"kind":"orphan"/g) ?? []).length;
+		realTask.kill();
 		break;
 	}
 	case "list": {
