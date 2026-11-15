@@ -1,3 +1,5 @@
+import { register } from "node:module";
+register(new URL("./typebox_shim.mjs", import.meta.url));
 import { TaskRegistry, readRange, parseLogTail } from "../extensions/tasks.ts";
 import { writeFile } from "node:fs/promises";
 
@@ -226,8 +228,53 @@ switch (scenario) {
 		out.result = { changed: outcome.changed, waitedMs: outcome.waitedMs, content: range.content, elapsedMs: Date.now() - t0 };
 		break;
 	}
+	case "factory-e2e": {
+		const { default: factory } = await import("../extensions/tasks.ts");
+		const tools = {};
+		const handlers = {};
+		const sent = [];
+		let idle = payload.startIdle ?? true;
+		const pi = {
+			on: (event, handler) => {
+				handlers[event] = handler;
+			},
+			registerTool: (tool) => {
+				tools[tool.name] = tool;
+			},
+			registerCommand: () => {},
+			sendMessage: (message) => {
+				sent.push(message.content);
+			},
+		};
+		await factory(pi);
+		const ctx = { cwd: root, sessionManager: { getBranch: () => [] }, isIdle: () => idle };
+		await handlers["session_start"]({}, ctx);
+		const created = await tools.task_create.execute("t1", { cmd: payload.cmd ?? "exit 42" }, undefined, undefined, ctx);
+		const id = created.details.id;
+		const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+		await settle(payload.firstWaitMs ?? 3500);
+		const listed = await tools.task_list.execute("t2", {}, undefined, undefined, ctx);
+		out.listText = listed.content[0].text;
+		if (payload.holdNotify) {
+			idle = false;
+			sent.length = 0;
+			const second = await tools.task_create.execute("t3", { cmd: "exit 3" }, undefined, undefined, ctx);
+			await settle(3500);
+			out.heldSentCount = sent.length;
+			idle = true;
+			await settle(3500);
+			out.flushedSentCount = sent.length;
+			out.flushedText = sent[0] ?? null;
+			out.secondId = second.details.id;
+		}
+		out.notifyText = payload.holdNotify ? null : (sent.find((t) => t.includes(id)) ?? null);
+		await handlers["session_shutdown"]?.();
+		break;
+	}
 	default:
 		throw new Error(`unknown scenario: ${scenario}`);
 }
 
 console.log(JSON.stringify(out));
+
+

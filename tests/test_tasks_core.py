@@ -153,3 +153,16 @@ def test_orphan_detection_and_idempotent_mark(tmp_path) -> None:
     assert len(out["foreignAfterOwnerDeath"]) == 1
     assert out["orphanIds"] == out["foreignAfterOwnerDeath"]
     assert out["journalOrphanEvents"] == 1
+
+
+def test_factory_fast_exit_observable_via_precheck(tmp_path) -> None:
+    out = drive(tmp_path, "factory-e2e", {"cmd": "exit 42"})
+    assert f"exit=code=42" in out["listText"]
+    assert out["notifyText"] and "code=42" in out["notifyText"]
+
+
+def test_factory_notify_held_during_busy_and_flushed(tmp_path) -> None:
+    out = drive(tmp_path, "factory-e2e", {"holdNotify": True})
+    assert out["heldSentCount"] == 0
+    assert out["flushedSentCount"] == 1
+    assert "code=3" in out["flushedText"]
