@@ -277,7 +277,7 @@ def test_workflow_tools_behavior() -> None:
 def test_workflow_journal_tail_fallback() -> None:
     entries = [
         {"index": 0, "ok": True, "text": "a"},
-        {"index": 1, "ok": False, "text": "b"},
+        {"index": 1, "ok": False},
         {"index": 2, "ok": True, "text": "c"},
     ]
     out = drive("journal-tail", {"makeFiles": entries, "lines": 2, "fresh": True})
@@ -293,3 +293,10 @@ def test_workflow_journal_tail_missing_file_is_null() -> None:
     out = drive("journal-tail", {"fresh": True})
     assert out["tail"] is None
     assert "text" not in out
+
+
+def test_workflow_journal_all_failed_still_degrades() -> None:
+    out = drive("journal-tail", {"makeFiles": [{"index": 0, "ok": False}], "fresh": True})
+    assert out["tail"]["total"] == 1
+    assert out["tail"]["okCount"] == 0
+    assert "FAILED" in out["text"]

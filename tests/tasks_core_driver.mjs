@@ -62,6 +62,8 @@ switch (scenario) {
 	}
 	case "reload": {
 		const fresh = new TaskRegistry(root);
+		await fresh.list();
+		await fresh.reapDeadPids();
 		out.tasks = (await fresh.list()).map((task) => ({ id: task.id, state: task.state, pid: task.pid, exitCode: task.exitCode }));
 		break;
 	}
@@ -168,6 +170,7 @@ switch (scenario) {
 		const yieldId = await registry.nextId();
 		await registry.recordCreate(yieldId, "yield", root, "live-foreign-owner", 4194303, aliveOwner.pid ?? 0);
 		await registry.list();
+		await registry.reapDeadPids();
 		let all = await registry.list();
 		out.selfState = all.find((t) => t.id === selfId)?.state;
 		out.deadOwnerState = all.find((t) => t.id === deadId)?.state;

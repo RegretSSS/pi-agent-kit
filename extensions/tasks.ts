@@ -226,13 +226,13 @@ export class TaskRegistry {
 
 	async ensureLoaded(): Promise<void> {
 		await this.refreshFromJournal();
-		await this.reapDeadPids();
 	}
 
-	async reapDeadPids(): Promise<TaskRecord[]> {
+	async reapDeadPids(skipIds?: ReadonlySet<string>): Promise<TaskRecord[]> {
 		const reaped: TaskRecord[] = [];
 		for (const task of this.tasks.values()) {
 			if (task.state !== "running") continue;
+			if (skipIds?.has(task.id)) continue;
 			const foreignOwner = task.ownerPid !== undefined && task.ownerPid !== process.pid;
 			if (foreignOwner && this.ownerAlive(task.ownerPid!)) continue;
 			if (this.processAlive(task)) continue;
@@ -246,8 +246,8 @@ export class TaskRegistry {
 		try {
 			process.kill(ownerPid, 0);
 			return true;
-		} catch {
-			return false;
+		} catch (error) {
+			return (error as NodeJS.ErrnoException).code === "EPERM";
 		}
 	}
 
@@ -376,10 +376,13 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 			entry.exited = true;
 			entry.exitCode = code;
 			entry.exitSignal = signal;
+			child.unref();
 		});
 		child.on("error", () => {
 			entry.exited = true;
 			entry.exitCode = null;
+			entry.exitSignal = null;
+			child.unref();
 		});
 		children.set(id, entry);
 		return entry;
@@ -419,7 +422,7 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 			}
 			finished.push(registry.get(id)!);
 		}
-		const reaped = await registry.reapDeadPids();
+		const reaped = await registry.reapDeadPids(new Set(children.keys()));
 		const orphaned = await registry.livingForeignTasks();
 		for (const task of orphaned) {
 			await registry.markOrphan(task.id);
@@ -511,7 +514,7 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 			}
 			const current = await readSnapshot();
 			const { content, cursor } = readRange(current.record, current.log, params.since ?? 0);
-			const protocol = `[cursor=${cursor} state=${current.state} exit=${current.exitCode ?? "-"}${waitedMs > 0 ? ` waited=${Math.round(waitedMs / 1000)}s` : ""}]`;
+			const protocol = `[cursor=${cursor} state=${current.state} exit=${exitText(current)}${waitedMs > 0 ? ` waited=${Math.round(waitedMs / 1000)}s` : ""}]`;
 			return {
 				content: [{ type: "text", text: `${content || "(无新输出)"}\n${protocol}` }],
 				details: { cursor, state: current.state, exitCode: current.exitCode, waitedMs },
@@ -555,7 +558,7 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 					groupSignal("SIGKILL");
 				}
 				children.delete(task.id);
-				await registry.markExit(task.id, entry.exitCode);
+				await registry.markExit(task.id, entry.exitCode, entry.exitSignal);
 			} else if (!canSignalTask(task)) {
 				await registry.markExit(task.id, null);
 			} else {
@@ -592,7 +595,7 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 				return { content: [{ type: "text", text: "无后台任务" }], details: { tasks: [] } };
 			}
 			const lines = tasks.map((task) => {
-				const owner = task.ownerPid === undefined || task.ownerPid === process.pid ? "own" : `owner=${task.ownerPid}`;
+				const owner = task.ownerPid === undefined ? "own?" : task.ownerPid === process.pid ? "own" : `owner=${task.ownerPid}`;
 				const flag = task.orphanAt ? " [orphan]" : "";
 				const exit = task.state === "exited" ? ` exit=${exitText(task)}` : "";
 				return `${task.state.padEnd(7)} ${task.id} pid=${task.pid} ${owner}${flag}${exit} ${task.name}`;

@@ -171,8 +171,8 @@ export async function workflowJournalTail(dir: string, runId: string, lines: num
 		if (!line) continue;
 		try {
 			const entry = JSON.parse(line) as { index?: unknown; ok?: unknown; text?: unknown };
-			if (typeof entry.index !== "number" || typeof entry.ok !== "boolean" || typeof entry.text !== "string") continue;
-			rows.push({ index: entry.index, ok: entry.ok, text: entry.text });
+			if (typeof entry.index !== "number" || typeof entry.ok !== "boolean") continue;
+			rows.push({ index: entry.index, ok: entry.ok, text: typeof entry.text === "string" ? entry.text : "" });
 		} catch {
 			continue;
 		}
