@@ -472,6 +472,7 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 				detached: true,
 				stdio: ["ignore", logHandle.fd, logHandle.fd],
 			});
+			child.unref();
 			watchChild(id, child);
 			await logHandle.close();
 			const record = await registry.recordCreate(id, params.cmd, cwd, (params.name ?? params.cmd.slice(0, 40)).slice(0, 200), child.pid ?? 0);
@@ -514,7 +515,7 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 			}
 			const current = await readSnapshot();
 			const { content, cursor } = readRange(current.record, current.log, params.since ?? 0);
-			const protocol = `[cursor=${cursor} state=${current.state} exit=${exitText(current)}${waitedMs > 0 ? ` waited=${Math.round(waitedMs / 1000)}s` : ""}]`;
+			const protocol = `[cursor=${cursor} state=${current.state}${current.state === "exited" ? ` exit=${exitText(current)}` : ""}${waitedMs > 0 ? ` waited=${Math.round(waitedMs / 1000)}s` : ""}]`;
 			return {
 				content: [{ type: "text", text: `${content || "(无新输出)"}\n${protocol}` }],
 				details: { cursor, state: current.state, exitCode: current.exitCode, waitedMs },
@@ -560,7 +561,7 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 				children.delete(task.id);
 				await registry.markExit(task.id, entry.exitCode, entry.exitSignal);
 			} else if (!canSignalTask(task)) {
-				await registry.markExit(task.id, null);
+				await registry.markExit(task.id, null, "already-gone");
 			} else {
 				try {
 					process.kill(-task.pid, "SIGTERM");
@@ -573,8 +574,9 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 					try {
 						process.kill(-task.pid, "SIGKILL");
 					} catch {}
+					await registry.markExit(task.id, null, "SIGKILL");
 				}
-				await registry.markExit(task.id, null);
+				await registry.markExit(task.id, null, "SIGTERM");
 			}
 			const stopped = registry.get(task.id);
 			return {

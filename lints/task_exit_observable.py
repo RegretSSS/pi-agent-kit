@@ -13,10 +13,8 @@ def main() -> int:
         return 1
     source = path.read_text(errors="ignore")
     violations = []
-    if re.search(r"child\.unref\(\);\s*\n\s*watchChild", source):
-        violations.append("spawn 后同步 child.unref()——libuv 停 watch 后 exit 事件不触发,退出码全靠轮询兜底=永久 unknown(11-15 aicontest 工单①根因);detached 已保证父子解耦")
-    if not re.search(r'exitSignal = signal;\s*\n\s*child\.unref\(\)', source):
-        violations.append("exit handler 内缺 child.unref()——拿到观测前 unref 丢事件,永不 unref 则 print/json 模式(pi -p)完成后被 child watcher 吊住不退出(审查#3)")
+    if not re.search(r"child\.unref\(\);\s*\n\s*watchChild\(id, child\)", source):
+        violations.append("spawn 段缺同步 child.unref()——print/json 模式(pi -p)会话完成后靠事件循环排空退出,运行中任务的 child handle 吊住进程整段任务时长;unref 不丢 exit 事件(Node v24 实测,循环审查P1实证),工单①真因是 reap 竞态已另修")
     if not re.search(r'child\.on\("exit",\s*\(code,\s*signal\)', source):
         violations.append("exit handler 未收 signal 参数——被杀任务 code=null 且 signal 丢失,成功/被杀/崩溃三态不可分")
     if not re.search(r"kind: \"orphan\"", source) or "livingForeignTasks" not in source:

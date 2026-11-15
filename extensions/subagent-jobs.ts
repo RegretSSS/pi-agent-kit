@@ -178,6 +178,7 @@ export async function workflowJournalTail(dir: string, runId: string, lines: num
 		}
 	}
 	if (rows.length === 0) return null;
+	rows.sort((a, b) => a.index - b.index);
 	return { total: rows.length, okCount: rows.filter((r) => r.ok).length, tail: rows.slice(-Math.max(1, Math.min(200, Math.floor(lines)))) };
 }
 
@@ -229,7 +230,7 @@ export function registerWorkflowRunTools(pi: ExtensionAPI, Type: typeof import("
 						rows.push(`- ${id} | journal ${tail ? `${tail.total} 条(ok ${tail.okCount})` : "空"} | 最后 ${tail && tail.tail[0] ? (tail.tail[0].ok ? "ok" : "FAILED") : "unknown"}`);
 					}
 					const text = [`[journal 降级] RPC 不可达(${reply.success ? "返回结构异常" : String(reply.error)}),本会话 tasks 目录的 run:`, ...rows].join("\n");
-					return { content: [{ type: "text", text }], details: { runs: [] } };
+					return { content: [{ type: "text", text }], details: { runs: [], journalFallback: journalRuns.map((id) => ({ id })) } };
 				}
 			}
 			return { content: [{ type: "text", text: rpcError("workflow_list", reply.success ? "返回结构异常" : String(reply.error)) }], details: { runs: [] }, isError: true };
