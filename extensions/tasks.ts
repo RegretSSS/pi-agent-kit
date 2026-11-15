@@ -369,6 +369,8 @@ export default async function (pi: ExtensionAPI) {
 	const registry = new TaskRegistry();
 	const children = new Map<string, ChildEntry>();
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
+	let sessionIdle: (() => boolean) | null = null;
+	const pendingNotify: string[] = [];
 
 function watchChild(id: string, child: ChildProcess): ChildEntry {
 		const entry: ChildEntry = { child, exited: false, exitCode: null, exitSignal: null };
@@ -395,6 +397,14 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 		}
 	}
 
+	function deliverNotify(content: string): void {
+		if (sessionIdle && !sessionIdle()) {
+			pendingNotify.push(content);
+			return;
+		}
+		pi.sendMessage({ customType: "task-notify", content, display: true }, { triggerTurn: true });
+	}
+
 	async function notifyFinished(tasks: TaskRecord[]): Promise<void> {
 		if (tasks.length === 0) return;
 		const lines: string[] = [];
@@ -403,13 +413,15 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 			const tail = log ? parseLogTail(log.subarray(Math.max(0, log.length - 8192)).toString("utf8"), NOTIFY_TAIL_CHARS) : "";
 			lines.push(`[${task.id}] ${task.name} exit=${exitText(task)} tail: ${tail}`);
 		}
-		pi.sendMessage(
-			{ customType: "task-notify", content: `后台任务结束 ${lines.length} 条:\n${lines.join("\n")}`, display: true },
-			{ triggerTurn: true },
-		);
+		deliverNotify(`后台任务结束 ${lines.length} 条:\n${lines.join("\n")}`);
 	}
 
 	async function sweep(): Promise<void> {
+		if (pendingNotify.length > 0 && (!sessionIdle || sessionIdle())) {
+			const merged = pendingNotify.join("\n\n");
+			pendingNotify.length = 0;
+			pi.sendMessage({ customType: "task-notify", content: merged, display: true }, { triggerTurn: true });
+		}
 		await registry.refreshFromJournal();
 		const finished: TaskRecord[] = [];
 		for (const [id, entry] of children) {
@@ -434,10 +446,7 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 		await notifyFinished([...finished, ...reaped]);
 		if (orphaned.length > 0) {
 			const orphanLines = orphaned.map((task) => `[${task.id}] ${task.name} pid=${task.pid} owner=${task.ownerPid}已死,任务仍存活`);
-			pi.sendMessage(
-				{ customType: "task-notify", content: `孤儿任务告警 ${orphanLines.length} 条(父进程已退出,任务仍在跑,请接管或 task_kill):\n${orphanLines.join("\n")}`, display: true },
-				{ triggerTurn: true },
-			);
+			deliverNotify(`孤儿任务告警 ${orphanLines.length} 条(父进程已退出,任务仍在跑,请接管或 task_kill):\n${orphanLines.join("\n")}`);
 		}
 	}
 
@@ -606,7 +615,8 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 		},
 	});
 
-	pi.on("session_start", async () => {
+	pi.on("session_start", async (_event, ctx) => {
+		sessionIdle = () => ctx.isIdle();
 		await registry.ensureLoaded();
 		await registry.reapDeadPids();
 		await registry.gcExpired();
