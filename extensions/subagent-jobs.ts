@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -142,6 +143,49 @@ export type WorkflowAgentRow = { label: string; state: string; error?: string; t
 
 export type WorkflowStatusDetail = WorkflowRunSummary & { logs: string[]; agents: WorkflowAgentRow[] };
 
+export const RUN_ID_SHAPE = /^wf_[a-z0-9-]+$/;
+
+export function pathDashEncode(cwd: string): string {
+	return cwd.replace(/[/\\]/g, "-").replace(/^[A-Za-z]:-/, "").replace(/^-+/, "");
+}
+
+export function workflowJournalDir(cwd: string, sessionId: string | undefined, override?: string): string | null {
+	if (override) return override;
+	if (!sessionId) return null;
+	const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+	return join(tmpdir(), `pi-subagents-${uid}`, pathDashEncode(cwd), sessionId, "tasks");
+}
+
+export type JournalTailRow = { index: number; ok: boolean; text: string };
+
+export async function workflowJournalTail(dir: string, runId: string, lines: number): Promise<{ total: number; okCount: number; tail: JournalTailRow[] } | null> {
+	if (!RUN_ID_SHAPE.test(runId)) return null;
+	let raw: string;
+	try {
+		raw = await readFile(join(dir, `${runId}.workflow.jsonl`), "utf8");
+	} catch {
+		return null;
+	}
+	const rows: JournalTailRow[] = [];
+	for (const line of raw.split("\n")) {
+		if (!line) continue;
+		try {
+			const entry = JSON.parse(line) as { index?: unknown; ok?: unknown; text?: unknown };
+			if (typeof entry.index !== "number" || typeof entry.ok !== "boolean" || typeof entry.text !== "string") continue;
+			rows.push({ index: entry.index, ok: entry.ok, text: entry.text });
+		} catch {
+			continue;
+		}
+	}
+	if (rows.length === 0) return null;
+	return { total: rows.length, okCount: rows.filter((r) => r.ok).length, tail: rows.slice(-Math.max(1, Math.min(200, Math.floor(lines)))) };
+}
+
+export function formatJournalFallback(runId: string, journal: { total: number; okCount: number; tail: JournalTailRow[] }, cause: string): string {
+	const rows = journal.tail.map((r) => `#${r.index} ${r.ok ? "ok" : "FAILED"} ${(r.text ?? "").slice(0, 160).replace(/\n/g, " ")}`);
+	return [`[journal 降级] ${runId} | RPC 不可达(${cause}),以下为本机 journal 回放:`, `完成条目 ${journal.total},其中 ok ${journal.okCount}:`, ...rows.map((r) => `- ${r}`)].join("\n");
+}
+
 export function formatWorkflowRuns(runs: WorkflowRunSummary[]): string {
 	if (runs.length === 0) return "本会话还没有 workflow run(一经 SubagentWorkflow 启动即在此可见,含已结束的)";
 	const rows = runs.map((run) => {
@@ -169,10 +213,24 @@ export function registerWorkflowRunTools(pi: ExtensionAPI, Type: typeof import("
 		description: "列出本会话全部 workflow run(含运行中/已完成/killed):状态、agent 进度、tokens、脚本与 journal 路径。",
 		promptSnippet: "workflow run 清单查询",
 		parameters: Type.Object({}),
-		async execute(_toolCallId, _params, _signal, _onUpdate) {
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			const reply = await scheduleRpc<{ runs: WorkflowRunSummary[] }>(pi.events, "subagents:rpc:workflow_list", {});
 			if (reply.success && reply.data && Array.isArray(reply.data.runs)) {
 				return { content: [{ type: "text", text: formatWorkflowRuns(reply.data.runs) }], details: { runs: reply.data.runs } };
+			}
+			const dir = workflowJournalDir(ctx.cwd, ctx.sessionManager.getSessionId?.());
+			if (dir) {
+				const names = await readdir(dir).catch(() => [] as string[]);
+				const journalRuns = names.filter((n) => n.endsWith(".workflow.jsonl")).map((n) => n.slice(0, -".workflow.jsonl".length)).filter((id) => RUN_ID_SHAPE.test(id));
+				if (journalRuns.length > 0) {
+					const rows: string[] = [];
+					for (const id of journalRuns) {
+						const tail = await workflowJournalTail(dir, id, 1);
+						rows.push(`- ${id} | journal ${tail ? `${tail.total} 条(ok ${tail.okCount})` : "空"} | 最后 ${tail && tail.tail[0] ? (tail.tail[0].ok ? "ok" : "FAILED") : "unknown"}`);
+					}
+					const text = [`[journal 降级] RPC 不可达(${reply.success ? "返回结构异常" : String(reply.error)}),本会话 tasks 目录的 run:`, ...rows].join("\n");
+					return { content: [{ type: "text", text }], details: { runs: [] } };
+				}
 			}
 			return { content: [{ type: "text", text: rpcError("workflow_list", reply.success ? "返回结构异常" : String(reply.error)) }], details: { runs: [] }, isError: true };
 		},
@@ -186,10 +244,16 @@ export function registerWorkflowRunTools(pi: ExtensionAPI, Type: typeof import("
 			run_id: Type.String({ description: "workflow_list 返回的 id(wf_ 前缀)" }),
 			lines: Type.Optional(Type.Number({ description: "logs/agents 各取尾部行数,默认 20,上限 200" })),
 		}),
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const reply = await scheduleRpc<WorkflowStatusDetail>(pi.events, "subagents:rpc:workflow_status", { runId: params.run_id, lines: params.lines });
 			if (reply.success && reply.data && reply.data.id) {
 				return { content: [{ type: "text", text: formatWorkflowStatus(reply.data) }], details: reply.data };
+			}
+			const dir = workflowJournalDir(ctx.cwd, ctx.sessionManager.getSessionId?.());
+			const journal = dir ? await workflowJournalTail(dir, params.run_id, params.lines ?? 20) : null;
+			if (journal) {
+				const cause = reply.success ? "返回结构异常" : String(reply.error);
+				return { content: [{ type: "text", text: formatJournalFallback(params.run_id, journal, cause) }], details: { journal } };
 			}
 			return { content: [{ type: "text", text: rpcError("workflow_status", reply.success ? "返回结构异常" : String(reply.error)) }], details: null, isError: true };
 		},

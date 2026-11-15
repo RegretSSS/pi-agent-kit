@@ -70,9 +70,28 @@ if (scenario === "format") {
 	out.reply = await scheduleRpc(events, p.channel, { jobId: p.jobId ?? "j1" }, p.timeoutMs ?? 300, () => "fixed-id");
 }
 
-if (scenario === "wf-format") {
+if (scenario === "journal-tail") {
+	const { workflowJournalTail, workflowJournalDir, pathDashEncode, formatJournalFallback } = await import("../extensions/subagent-jobs.ts");
+	const { writeFile, mkdir } = await import("node:fs/promises");
+	const root = `/tmp/kit-journal-tail-${process.pid}`;
+	if (p.fresh) {
+		const { rm } = await import("node:fs/promises");
+		await rm(root, { recursive: true, force: true });
+	}
+	if (p.makeFiles) {
+		await mkdir(root, { recursive: true });
+		await writeFile(`${root}/wf_test1234.workflow.jsonl`, p.makeFiles.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
+	}
+	const tail = await workflowJournalTail(root, p.runId ?? "wf_test1234", p.lines ?? 20);
+	out.tail = tail ? { total: tail.total, okCount: tail.okCount, indexes: tail.tail.map((r) => r.index) } : null;
+	out.badId = await workflowJournalTail(root, "../../etc/passwd", 5);
+	out.encode = pathDashEncode("/home/remedy/workspace/x y");
+	out.dirOverride = workflowJournalDir("/any", undefined, root);
+	if (tail) out.text = formatJournalFallback("wf_test1234", tail, "rpc timeout");
+} else if (scenario === "wf-format") {
 	out.runsText = formatWorkflowRuns(p.runs ?? []);
 	out.statusText = p.detail ? formatWorkflowStatus(p.detail) : null;
+
 } else if (scenario === "wf-tools") {
 	const tools = new Map();
 	const pi = {

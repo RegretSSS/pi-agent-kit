@@ -272,3 +272,24 @@ def test_workflow_tools_behavior() -> None:
     })["result"]
     assert out["isError"] is True
     assert "cannot pause now" in out["text"]
+
+
+def test_workflow_journal_tail_fallback() -> None:
+    entries = [
+        {"index": 0, "ok": True, "text": "a"},
+        {"index": 1, "ok": False, "text": "b"},
+        {"index": 2, "ok": True, "text": "c"},
+    ]
+    out = drive("journal-tail", {"makeFiles": entries, "lines": 2, "fresh": True})
+    assert out["tail"]["total"] == 3
+    assert out["tail"]["okCount"] == 2
+    assert out["tail"]["indexes"] == [1, 2]
+    assert out["badId"] is None
+    assert "[journal 降级]" in out["text"]
+    assert "FAILED" in out["text"] and "ok 2" in out["text"]
+
+
+def test_workflow_journal_tail_missing_file_is_null() -> None:
+    out = drive("journal-tail", {"fresh": True})
+    assert out["tail"] is None
+    assert "text" not in out
