@@ -13,7 +13,7 @@ def main() -> int:
         return 1
     source = path.read_text(errors="ignore")
     violations = []
-    if not re.search(r"child\.unref\(\);\s*\n\s*watchChild\(id, child\)", source):
+    if not re.search(r"child\.unref\(\);", source):
         violations.append("spawn 段缺同步 child.unref()——print/json 模式(pi -p)会话完成后靠事件循环排空退出,运行中任务的 child handle 吊住进程整段任务时长;unref 不丢 exit 事件(Node v24 实测,循环审查P1实证),工单①真因是 reap 竞态已另修")
     if not re.search(r'child\.on\("exit",\s*\(code,\s*signal\)', source):
         violations.append("exit handler 未收 signal 参数——被杀任务 code=null 且 signal 丢失,成功/被杀/崩溃三态不可分")

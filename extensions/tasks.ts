@@ -1,5 +1,5 @@
 import { appendFile, mkdir, open, readFile, readdir, rm, stat } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -105,7 +105,11 @@ export function parseLogTail(text: string, chars: number): string {
 	return squashed.length <= chars ? squashed : squashed.slice(-chars);
 }
 
-const TASK_ID_SHAPE = /^\d{14}-\d+$/;
+const TASK_ID_SHAPE = /^\d{14}-\d+(?:-[a-z0-9]{1,8})?$/;
+
+export function claimSuffix(): string {
+	return Math.random().toString(36).slice(2, 6);
+}
 const PID_CEILING = 4_194_304;
 
 export function exitText(task: TaskRecord): string {
@@ -270,7 +274,15 @@ export class TaskRegistry {
 		const taken = new Set((await this.list()).map((task) => task.id));
 		let seq = 1;
 		while (taken.has(`${stamp}-${seq}`)) seq += 1;
-		return `${stamp}-${seq}`;
+		for (let attempt = 0; attempt < 8; attempt += 1) {
+			const candidate = `${stamp}-${seq}-${claimSuffix()}`;
+			try {
+				const handle = openSync(join(this.root, `${candidate}.claim`), "wx");
+				closeSync(handle);
+				return candidate;
+			} catch {}
+		}
+		throw new Error("task id claim 连续失败,重试 task_create");
 	}
 
 	async recordCreate(id: string, cmd: string, cwd: string, name: string, pid: number, ownerPid: number = process.pid): Promise<TaskRecord> {
@@ -359,6 +371,7 @@ export class TaskRegistry {
 		await this.append({ kind: "gc", ids: expired });
 		for (const id of expired) {
 			await rm(this.logPath(id), { force: true });
+			await rm(join(this.root, `${id}.claim`), { force: true });
 		}
 		return expired.length;
 	}
@@ -446,7 +459,7 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 		await notifyFinished([...finished, ...reaped]);
 		if (orphaned.length > 0) {
 			const orphanLines = orphaned.map((task) => `[${task.id}] ${task.name} pid=${task.pid} owner=${task.ownerPid}已死,任务仍存活`);
-			deliverNotify(`孤儿任务告警 ${orphanLines.length} 条(父进程已退出,任务仍在跑,请接管或 task_kill):\n${orphanLines.join("\n")}`);
+			deliverNotify(`孤儿任务告警 ${orphanLines.length} 条(父进程已退出,任务仍在跑,请接管或 task_stop):\n${orphanLines.join("\n")}`);
 		}
 	}
 
@@ -482,9 +495,9 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 				stdio: ["ignore", logHandle.fd, logHandle.fd],
 			});
 			child.unref();
-			watchChild(id, child);
 			await logHandle.close();
 			const record = await registry.recordCreate(id, params.cmd, cwd, (params.name ?? params.cmd.slice(0, 40)).slice(0, 200), child.pid ?? 0);
+			watchChild(id, child);
 			return {
 				content: [{ type: "text", text: `task ${record.id} started (pid=${record.pid}): ${record.cmd}` }],
 				details: { id: record.id, name: record.name, pid: record.pid },
@@ -566,9 +579,13 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 				}
 				if (!entry.exited) {
 					groupSignal("SIGKILL");
+					const killDeadline = Date.now() + 2000;
+					while (!entry.exited && Date.now() < killDeadline) {
+						await new Promise((resolve) => setTimeout(resolve, 100));
+					}
 				}
 				children.delete(task.id);
-				await registry.markExit(task.id, entry.exitCode, entry.exitSignal);
+				await registry.markExit(task.id, entry.exitCode, entry.exited ? entry.exitSignal : "SIGKILL");
 			} else if (!canSignalTask(task)) {
 				await registry.markExit(task.id, null, "already-gone");
 			} else {
@@ -584,8 +601,9 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 						process.kill(-task.pid, "SIGKILL");
 					} catch {}
 					await registry.markExit(task.id, null, "SIGKILL");
+				} else {
+					await registry.markExit(task.id, null, "SIGTERM");
 				}
-				await registry.markExit(task.id, null, "SIGTERM");
 			}
 			const stopped = registry.get(task.id);
 			return {
@@ -618,7 +636,7 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 	pi.on("session_start", async (_event, ctx) => {
 		sessionIdle = () => ctx.isIdle();
 		await registry.ensureLoaded();
-		await registry.reapDeadPids();
+		await registry.reapDeadPids(new Set(children.keys()));
 		await registry.gcExpired();
 		if (!pollTimer) {
 			pollTimer = setInterval(() => {
