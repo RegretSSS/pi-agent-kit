@@ -11,7 +11,7 @@ if (scenario === "mark-status") {
 } else if (scenario === "reconstruct") {
 	out.state = reconstructTodos(payload.branch ?? []);
 } else if (scenario === "format") {
-	out.text = formatTodos(payload.todos ?? []);
+	out.text = formatTodos(payload.todos ?? [], typeof payload.cap === "number" ? payload.cap : undefined);
 } else if (scenario === "session") {
 	const handlers = {};
 	const tools = {};
@@ -42,9 +42,16 @@ if (scenario === "mark-status") {
 	for (const step of payload.steps ?? []) {
 		const result = await tools.todo.execute("t1", step, undefined, undefined, ctx);
 		out.steps = out.steps ?? [];
-		out.steps.push({ text: result.content[0].text, todos: result.details.todos.map((t) => [String(t.id), t.status]), error: result.details.error ?? null });
+		out.steps.push({
+			text: result.content[0].text,
+			error: result.details.error ?? null,
+			done: result.details.done,
+			total: result.details.total,
+			activeId: result.details.activeId ?? null,
+		});
 	}
 	out.entries = entries.filter((e) => e.customType === "todo-state").map((e) => e.data);
+	out.lastState = out.entries.length ? out.entries[out.entries.length - 1].todos : [];
 	out.command = commands["todos"] ? await (async () => {
 		const notes = [];
 		await commands["todos"].handler([], { ui: { notify: (text) => notes.push(text) } });
