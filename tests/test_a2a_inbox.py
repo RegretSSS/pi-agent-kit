@@ -51,6 +51,11 @@ def test_stale_claim_reclaimed_and_injected() -> None:
     assert out["rcptAtEnd"] is True
 
 
+def test_rcpt_present_never_submits_again() -> None:
+    out = drive("rcpt-exists")
+    assert len(out["submits"]) == 0
+
+
 def test_already_landed_marks_delivered_without_second_submit() -> None:
     out = drive("prelanded")
     assert len(out["submits"]) == 1

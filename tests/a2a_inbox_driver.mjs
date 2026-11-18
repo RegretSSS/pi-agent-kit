@@ -58,6 +58,9 @@ if (scenario === "foreign-claim" || scenario === "stale-claim") {
 		fs.utimesSync(claim, old, old);
 	}
 }
+if (scenario === "rcpt-exists") {
+	fs.writeFileSync(rcpt, '{"ts":0}');
+}
 
 await factory(pi);
 await handlers["session_start"]({}, { sessionManager: { getBranch: () => branch } });
@@ -72,6 +75,11 @@ if (scenario === "storm") {
 	await settle(300);
 	await bump();
 	await settle(1700);
+} else if (scenario === "rcpt-exists") {
+	await settle(1700);
+	await bump();
+	await settle(1700);
+	await bump();
 } else if (scenario === "prelanded") {
 	await settle(1700);
 	branch.push({ type: "message", message: { role: "user", content: [{ type: "text", text: envelope.wake_text }] } });
