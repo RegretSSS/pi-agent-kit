@@ -22,18 +22,36 @@ def test_landed_wake_confirmed_by_rcpt() -> None:
     out = drive("deliver")
     assert len(out["submits"]) == 1
     assert out["submits"][0]["options"] == {"deliverAs": "steer"}
-    assert out["rcptAfterConfirm"] is True
     assert out["rcptAtEnd"] is True
 
 
-def test_swallowed_submit_retries_until_landing() -> None:
-    out = drive("retry")
-    assert len(out["submits"]) == 2
-    assert out["rcptAfterConfirm"] is False
+def test_landing_unseen_never_reinjects() -> None:
+    out = drive("storm")
+    assert len(out["submits"]) == 1
+    assert out["rcptAtEnd"] is False
+    assert out["claimAtEnd"] is True
+
+
+def test_submit_throw_releases_claim_and_retries() -> None:
+    out = drive("throw-release")
+    assert out["throws"] == 1
+    assert len(out["submits"]) == 1
     assert out["rcptAtEnd"] is True
 
 
-def test_already_landed_marks_delivered_without_submit() -> None:
+def test_foreign_claim_blocks_injection() -> None:
+    out = drive("foreign-claim")
+    assert len(out["submits"]) == 0
+    assert out["rcptAtEnd"] is False
+
+
+def test_stale_claim_reclaimed_and_injected() -> None:
+    out = drive("stale-claim")
+    assert len(out["submits"]) == 1
+    assert out["rcptAtEnd"] is True
+
+
+def test_already_landed_marks_delivered_without_second_submit() -> None:
     out = drive("prelanded")
     assert len(out["submits"]) == 1
     assert out["rcptAtEnd"] is True

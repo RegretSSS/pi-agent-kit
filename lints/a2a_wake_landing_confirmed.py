@@ -16,8 +16,6 @@ def main() -> int:
     submit = re.search(r"pi\.sendUserMessage\(", source)
     precheck = re.search(r"if \(wakeLanded\(marker\)\) \{", source)
     confirm = re.search(r"setTimeout\(\(\) => \{.{0,200}?wakeLanded\(marker\)", source, re.DOTALL)
-    if not re.search(r"const LANDING_MAX_ATTEMPTS = \d+;", source):
-        violations.append("缺 LANDING_MAX_ATTEMPTS 上限——落地确认失败会无限重试")
     if not precheck or not submit or precheck.start() > submit.start():
         violations.append("sendUserMessage 前缺 wakeLanded 预检——上次已落地但确认窗口错过的信会在重试时二次注入")
     if not confirm or (submit and confirm.start() < submit.start()):

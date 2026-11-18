@@ -16,13 +16,21 @@ fs.writeFileSync(
 const branch = [];
 const handlers = {};
 const submits = [];
+const throwFirst = scenario === "throw-release";
+let thrownOnce = false;
+const lands = scenario === "deliver" || scenario === "throw-release" || scenario === "stale-claim";
 const pi = {
 	on: (event, handler) => {
 		handlers[event] = handler;
 	},
 	sendUserMessage: (text, options) => {
+		if (throwFirst && !thrownOnce) {
+			thrownOnce = true;
+			out.throws += 1;
+			throw new Error("compaction in progress");
+		}
 		submits.push({ text, options });
-		if (scenario === "deliver" || (scenario === "retry" && submits.length >= 2)) {
+		if (lands) {
 			branch.push({ type: "message", message: { role: "user", content: [{ type: "text", text }] } });
 		}
 	},
@@ -30,37 +38,50 @@ const pi = {
 
 const queueDir = path.join(root, "queue", "test-agent");
 fs.mkdirSync(queueDir, { recursive: true });
-const envelope = { msg_id: "m1", wake_text: "[a2a] 唤醒文本:检查 D22 同族丢信修复的落地确认行为" };
+const envelope = { msg_id: "m1", wake_text: "[a2a] 唤醒文本:检查注入幂等 claim 行为" };
 fs.writeFileSync(path.join(queueDir, "m1.msg"), JSON.stringify(envelope));
 const rcpt = path.join(root, "native-inbox", "test-agent", "rcpt-m1");
+const claim = path.join(root, "native-inbox", "test-agent", "inj-m1");
 
-const out = { submits: [], rcptAt: {} };
+const out = { submits: [], throws: 0 };
 const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-if (scenario === "prelanded") {
-	await factory(pi);
-	await handlers["session_start"]({}, { sessionManager: { getBranch: () => branch } });
-	await settle(1700);
-	branch.push({ type: "message", message: { role: "user", content: [{ type: "text", text: envelope.wake_text }] } });
+const bump = async () => {
 	fs.writeFileSync(path.join(queueDir, "trigger.msg"), "{}");
 	fs.unlinkSync(path.join(queueDir, "trigger.msg"));
 	await settle(300);
-} else if (scenario === "deliver" || scenario === "retry") {
-	await factory(pi);
-	await handlers["session_start"]({}, { sessionManager: { getBranch: () => branch } });
+};
+
+if (scenario === "foreign-claim" || scenario === "stale-claim") {
+	fs.writeFileSync(claim, "99999");
+	if (scenario === "stale-claim") {
+		const old = new Date(Date.now() - 400000);
+		fs.utimesSync(claim, old, old);
+	}
+}
+
+await factory(pi);
+await handlers["session_start"]({}, { sessionManager: { getBranch: () => branch } });
+
+if (scenario === "storm") {
 	await settle(1700);
-	out.rcptAfterConfirm = fs.existsSync(rcpt);
-	if (scenario === "retry") {
-		fs.writeFileSync(path.join(queueDir, "trigger.msg"), "{}");
-		fs.unlinkSync(path.join(queueDir, "trigger.msg"));
-		await settle(300);
+	for (let i = 0; i < 3; i += 1) {
+		await bump();
 		await settle(1700);
 	}
+} else if (scenario === "throw-release") {
+	await settle(300);
+	await bump();
+	await settle(1700);
+} else if (scenario === "prelanded") {
+	await settle(1700);
+	branch.push({ type: "message", message: { role: "user", content: [{ type: "text", text: envelope.wake_text }] } });
+	await bump();
 } else {
-	throw new Error(`unknown scenario: ${scenario}`);
+	await settle(1700);
 }
 
 handlers["session_shutdown"]?.();
 out.submits = submits.map((s) => ({ text: s.text, options: s.options }));
 out.rcptAtEnd = fs.existsSync(rcpt);
+out.claimAtEnd = fs.existsSync(claim);
 console.log(JSON.stringify(out));

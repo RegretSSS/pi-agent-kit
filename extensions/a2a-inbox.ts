@@ -6,7 +6,7 @@ import * as path from "node:path";
 const HEARTBEAT_MS = 20000;
 const RESOLVE_MS = 5000;
 const LANDING_CONFIRM_MS = 1500;
-const LANDING_MAX_ATTEMPTS = 36;
+const CLAIM_STALE_MS = 300000;
 const LANDING_MARKER_CHARS = 60;
 
 function mailboxRoot(): string {
@@ -85,7 +85,6 @@ export default function (pi: ExtensionAPI) {
   let branch: BranchLike | null = null;
   const injected = new Set<string>();
   const inflight = new Set<string>();
-  const attempts = new Map<string, number>();
 
   function wakeLanded(marker: string): boolean {
     if (!branch) {
@@ -153,16 +152,35 @@ export default function (pi: ExtensionAPI) {
       markDelivered(msgId, rcpt);
       return;
     }
-    if ((attempts.get(msgId) ?? 0) >= LANDING_MAX_ATTEMPTS) {
-      markDelivered(msgId, rcpt);
+    const claim = path.join(agentDir(), `inj-${msgId}`);
+    if (fs.existsSync(claim)) {
+      try {
+        if (Date.now() - fs.statSync(claim).mtimeMs < CLAIM_STALE_MS) {
+          injected.add(msgId);
+          return;
+        }
+        fs.rmSync(claim, { force: true });
+      } catch {
+        injected.add(msgId);
+        return;
+      }
+    }
+    try {
+      const handle = fs.openSync(claim, "wx");
+      fs.writeSync(handle, String(process.pid));
+      fs.closeSync(handle);
+    } catch {
+      injected.add(msgId);
       return;
     }
-    attempts.set(msgId, (attempts.get(msgId) ?? 0) + 1);
     inflight.add(msgId);
     try {
       pi.sendUserMessage(wakeText, { deliverAs: "steer" });
     } catch {
       inflight.delete(msgId);
+      try {
+        fs.rmSync(claim, { force: true });
+      } catch {}
       return;
     }
     setTimeout(() => {
@@ -182,7 +200,6 @@ export default function (pi: ExtensionAPI) {
       injected.add(msgId);
     } catch {}
     inflight.delete(msgId);
-    attempts.delete(msgId);
   }
 
   function scanQueue(): void {
