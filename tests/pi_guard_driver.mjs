@@ -365,8 +365,8 @@ async function runCall(handlers, ctx, tool, call) {
 	if (call.timeout !== undefined) input.timeout = call.timeout;
 	const original = call.command;
 	const toolName = call.toolName ?? "bash";
+	await handlers.tool_execution_start?.({ type: "tool_execution_start", toolName, toolCallId: call.id, args: { command: original } }, ctx);
 	await handlers.tool_call?.({ type: "tool_call", toolName, toolCallId: call.id, input }, ctx);
-	await handlers.tool_execution_start?.({ type: "tool_execution_start", toolName: "bash", toolCallId: call.id, args: { command: original } }, ctx);
 	const started = Date.now();
 	const onUpdate = (partialResult) => handlers.tool_execution_update?.({ type: "tool_execution_update", toolName: "bash", toolCallId: call.id, args: { command: original }, partialResult }, ctx);
 	let result;

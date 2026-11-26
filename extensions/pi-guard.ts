@@ -26,7 +26,6 @@ const CORES_BAND = 0.15;
 const TIMELINE_FIELDS = 6;
 const TIMELINE_SAMPLES = 32;
 const ENVELOPE_SAMPLES = 64;
-const PENDING_TTL_MS = 60000;
 const LOG_ROTATE_BYTES = 1024 * 1024;
 const LOG_SHOW_LINES = 10;
 const LOG_MIN_DURATION_MS = 2000;
@@ -811,7 +810,6 @@ export function freshSessionLeaders(rows: ProcRow[], parentPid: number, sinceMs:
 
 type NotifyType = "info" | "warning" | "error";
 type GuardContext = { hasUI: boolean; ui: { notify(message: string, type?: NotifyType): void } };
-type PendingCall = { original: string; unit: string; spinEligible: boolean; contained: boolean; at: number; known: Set<number> | null };
 type Tracked = { run: RunState; ctx: GuardContext | null; scopeDir: string; known: Set<number> | null; wrapFailed: boolean; leftover: boolean; suspectNotified: boolean };
 type Mode = "disabled" | "probing" | "contained" | "observed";
 type ContentPart = { type: string; text?: string };
@@ -944,7 +942,6 @@ export class Guard {
 	readonly logFile: string;
 	mode: Mode = "probing";
 	sliceDir = "";
-	private readonly pending = new Map<string, PendingCall>();
 	private readonly tracked = new Map<string, Tracked>();
 	private ticker: ReturnType<typeof setInterval> | null = null;
 	private reprobe: ReturnType<typeof setTimeout> | null = null;
@@ -962,11 +959,8 @@ export class Guard {
 			this.mode = "disabled";
 			return;
 		}
-		pi.on("tool_call", (event) => {
-			if (event.toolName === "bash") this.rewrite(event.toolCallId, event.input);
-		});
-		pi.on("tool_execution_start", (event, ctx) => {
-			if (event.toolName === "bash") this.begin(event.toolCallId, ctx as unknown as GuardContext);
+		pi.on("tool_call", (event, ctx) => {
+			if (event.toolName === "bash") this.begin(event.toolCallId, event.input, ctx as unknown as GuardContext);
 		});
 		pi.on("tool_execution_update", (event) => {
 			if (event.toolName === "bash") this.observeOutput(event.toolCallId, event.partialResult);
@@ -990,54 +984,41 @@ export class Guard {
 		else this.mode = "observed";
 	}
 
-	private rewrite(toolCallId: string, input: { command?: unknown; timeout?: unknown }): void {
+	private begin(toolCallId: string, input: { command?: unknown; timeout?: unknown }, ctx: GuardContext | null): void {
 		const command = input.command;
 		if (typeof command !== "string" || command === "" || isWrapped(command)) return;
 		const now = Date.now();
-		for (const [id, call] of this.pending) {
-			if (now - call.at > PENDING_TTL_MS) this.pending.delete(id);
-		}
 		let unit = "";
+		let wrapped: string | null = null;
 		if (this.mode === "contained") {
 			const candidate = nextUnitName(process.pid, (unitSeq += 1));
-			if (wrapFits(wrapCommand(command, candidate, this.config))) {
-				input.command = wrapCommand(command, candidate, this.config);
+			const candidateCommand = wrapCommand(command, candidate, this.config);
+			if (wrapFits(candidateCommand)) {
+				wrapped = candidateCommand;
 				unit = candidate;
 			}
 		}
-		this.pending.set(toolCallId, {
-			original: command,
-			unit,
-			spinEligible: isInlineScript(command) && !isExplicitlyBounded(command, input.timeout),
-			contained: unit !== "",
-			at: now,
-			known: unit === "" ? sessionLeaderChildren() : null,
-		});
-	}
-
-	private begin(toolCallId: string, ctx: GuardContext | null): void {
-		const call = this.pending.get(toolCallId);
-		this.pending.delete(toolCallId);
-		if (call === undefined) return;
+		const contained = unit !== "";
 		const run = createRunState({
 			toolCallId,
-			unit: call.unit,
-			original: call.original,
-			spinEligible: call.spinEligible,
-			contained: call.contained,
-			startedAt: Date.now(),
+			unit,
+			original: command,
+			spinEligible: isInlineScript(command) && !isExplicitlyBounded(command, input.timeout),
+			contained,
+			startedAt: now,
 		});
 		run.oomBase = this.sliceOomKill();
 		const entry: Tracked = {
 			run,
 			ctx,
-			scopeDir: call.unit === "" ? "" : join(this.sliceDir, `${call.unit}.scope`),
-			known: call.known,
+			scopeDir: contained ? join(this.sliceDir, `${unit}.scope`) : "",
+			known: contained ? null : sessionLeaderChildren(),
 			wrapFailed: false,
 			leftover: false,
 			suspectNotified: false,
 		};
 		this.tracked.set(toolCallId, entry);
+		if (wrapped !== null) input.command = wrapped;
 		void this.locate(entry);
 	}
 
@@ -1123,6 +1104,7 @@ export class Guard {
 	}
 
 	private sampleAll(): void {
+		if (this.mode === "contained") this.enforceSlice();
 		const oom = this.sliceOomKill();
 		for (const entry of this.tracked.values()) {
 			if (entry.run.done) continue;
@@ -1311,6 +1293,10 @@ export class Guard {
 	}
 }
 
+export function logDirPath(): string {
+	return process.env.PI_GUARD_LOG_DIR ?? join(homedir(), ".pi", "agent", "pi-guard");
+}
+
 export default function (pi: ExtensionAPI): void {
-	new Guard(pi, loadConfig(configPath()), join(homedir(), ".pi", "agent", "pi-guard"));
+	new Guard(pi, loadConfig(configPath()), logDirPath());
 }
