@@ -61,6 +61,27 @@
 - 崩溃自恢复：pi 重启后 task_list 仍见遗留任务；pid 不存活自动标 exited
 - 验收：会话内 `task_create` 一个 `sleep 5` → turn 结束 → ~7s 内收到自动唤醒；增量读两次游标正确；task_stop 幂等
 
+## D21 · pi-guard 扩展 `extensions/pi-guard.ts`（bash 命令隔离 + 失控判型，aicontest 工单 b61b1a54a780）
+
+- 范围：bash 工具的每一次调用（含 codemode 嵌套调用与子 agent 会话——同走 `tool_call` 钩子）；落盘后下次会话启动生效，不打断在跑会话
+- 隔离底座：cgroup v2。`tool_call` 钩子把命令原地改写为 `exec systemd-run --user --scope … -- env -u INVOCATION_ID SHLVL=$((SHLVL-1)) /bin/bash -c <原命令>`，每条命令一个 scope，全部落在 `piguard.slice` 下；PID/进程组/cwd/env/退出码与未包装时一致
+- 机器存活线（不看类型）：slice 聚合 `memory.max = ⌊MemTotal×(1−reserveFrac)⌋`（默认 75%，本机约 11.7GB）+ `memory.swap.max=0`；scope 启动后写 `memory.oom.group=1`，触顶时内核挑最大进程所在的**那条命令整组终止**，同 slice 的其他命令不受影响
+- 判型与动作（默认值，均可配）：
+
+| 类型 | 判据 | 动作 |
+|---|---|---|
+| 空转热循环 | 内联脚本 ∧ 无显式时限 ∧ 连续 60s：每拍都有新输出且主导行（数字/时间戳归一后）占非空行 ≥90%、行数 ≥20、近 5s 输出 ≥100KB/s、读入 ≤20KB/s | 停（写 scope 的 `cgroup.kill`），回执附证据并折叠重复输出 |
+| 无界累积 | 内存涨到硬顶被内核终止（slice `memory.events` 的 `oom_kill` 在命令末段上升 ∧ 退出码 137） | 内核已停，回执说明硬顶 |
+| 合法大内存 | 峰值 anon ≥2GB 且非上述两种结束 | 不动，记一行 |
+| 缓慢增长（疑似泄漏） | 5s 包络下沿连续 300s 不回落且增速 ≥1MB/s | 不动，回执标注 |
+| 纯空转（单核满载、内存平） | 近 5s 均核数 ∈[0.85,1.15] 连续 300s 且 anon 波动 ≤max(64MB,10%) | 不动，界面提示一次 + 回执标注 |
+
+- 回执：`tool_result` 追加文本块 `[pi-guard] …`（替换 content 必须原样带回 structuredContent）；普通短命令不追加，仅被干预/被标注/历时 ≥30s 的命令追加
+- 降级：systemd 用户管理器不可用，或包装后 <1s 失败且文本形如 `Failed to connect to bus` → 仅观测模式（/proc 找 shell、进程树采样、用户态硬顶与同一套空转判据），每 60s 重探；降级的那次调用回执提示「命令没有执行，请重试」
+- 日志：`~/.pi/agent/pi-guard/log.jsonl`（>1MB 轮转为 `.1`），只记 ≥2s / 非 normal / 非 contained 的命令；`/guard` 显示模式、阈值与最近 10 条
+- 配置：`~/.pi/agent/pi-guard.json`，键见 `DEFAULT_CONFIG`（`enabled`、`reserveFrac`、`sliceMaxBytes`、`slice`、`spinWindowSec`、`minOutBytesPerSec`、`maxInBytesPerSec`、`repeatFrac`…）；测试经 `PI_GUARD_CONFIG` 指定路径
+- 测试面：`tests/pi_guard_driver.mjs`（`unit` 纯函数时间线重放；`run` 以假 pi API + 假 bash 工具跑仅观测模式）；`lints/pi_guard_e2e_containment.py` 用 pi 真实 bash 工具 + 真实 systemd-run 跑隔离模式，slice 名独立于生产（不得含连字符——systemd 把连字符当层级分隔），不可用时跳过并说明
+
 ## 部署（每件完成即部署+实测，独立 commit）
 
 - desktop：`extensions/*.ts` → `~/.pi/agent/extensions/`；MCP 同步实跑；AGENTS.md 落位

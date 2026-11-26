@@ -157,3 +157,18 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D20-1 compact 唤醒**:session_compact(非 willRetry)经 sendUserMessage 直调注入『[compact 完成](手动/溢出/水位)』唤醒词——按 fold-index 重定位任务状态、续作未完成工作、自然边界则收尾;willRetry 早退防 overflow 重试输入被污染;description 显式接通 gauge 契约(30% 择机/50% 立即)。链路:gauge 提示→compact(brief)→fold-index 摘要→唤醒→重定位续作。
 - **D20-2 bili 残留清除**:history.ts 扩展退役(bili db 失去数据源,钻取成死链)+其测试/lint 删;compact-tool 单模板化(去 trace 列与 historyLikelyActive 探测);盘上五处 888M 全删(npm 包×2/config/cache/local/share)+部署侧 history.ts;README 移除 bili 致谢与互补提法。工具表再省 1,710 字符。
 - **D20-3 footer 百分比取整**:透传 usage.percent 浮点改 Math.round。
+
+## D21(pi-guard:临时脚本失控的机械防护,2026-11-26,aicontest 工单 b61b1a54a780)
+
+- **D21-1 用户令与红线**:给临时脚本加机械防护,但必须识别问题类型——不能只因资源吃得多/跑得久就停;加载模型、建索引、导入大库这类合法大内存活不得误杀。
+- **D21-2 选型:cgroup v2 + `systemd-run --user --scope`**。参考面:Claude Code 用时间界(`BASH_DEFAULT_TIMEOUT_MS` 默认 120000、`BASH_MAX_TIMEOUT_MS` 默认 600000)并限回读输出(`BASH_MAX_OUTPUT_LENGTH` 默认 30000),均见其官方 env-vars 文档;容器派用内核内存上限。本机实测:pi 会话近 12h 内 ≥150s 的 bash 调用 234 条全是合法的 26~48 分钟长命令 → 时长界直接否决;内核上限思路采纳,但不引入容器层,直接用 cgroup。scope 模式下命令"由 systemd-run 自己作为父进程执行并继承调用方环境"(本机 systemd-run(1) 249),PID/进程组不变,pi 的进程组 kill 照旧有效;热态每次 8~11ms,无需 root。
+- **D21-3 否决项**:①rlimit(`RLIMIT_AS` 按虚拟地址空间计,Java/Node/大 mmap 的合法任务会被误杀;挡不住交换区打满);②时长阈值(见上);③节流(`memory.high` 对涨到顶持平的合法加载是净伤害,且用户会话的 cgroup 未委托 cpu 控制器);④进程自迁 cgroup / 一次性助手代写 / busctl(内核要求写 cgroup.procs 者能写公共祖先,`/non-systemd` 的公共祖先是 root → EACCES;`/run/user/1000/bus` 不存在)。
+- **D21-4 硬顶只在 slice 聚合线,不给单命令分顶**(与初版方案不同):按命令分顶等于保护"先占住内存的失控者"、先杀后来的合法任务;聚合线触顶时内核按 oom_score 挑最大进程,配合 scope 的 `memory.oom.group=1`(内核 cgroup-v2 文档:"all tasks belonging to the cgroup … are killed together or not at all")正好整组终止肇事命令。E2E 实证:150MB slice 内失控者被终止,并发的 sleep 邻居正常退出。
+- **D21-5 空转判据取行为签名而非资源量**:事故真签名=无 timeout 的内联脚本每圈向 stderr 刷同一行"30 秒后重试"(原始会话提取,推翻了"无读写"的设想)。可观测代理=连续 60s 高频(≥100KB/s)重复输出同一行形状(数字/时间戳归一)且几乎不读输入(≤20KB/s)。资源量(内存大小、CPU 核数、历时)只用于"只记录"的两类。已知边界:向 stdout 高速灌进度的内联数据生成器会被当作空转停掉(回执指明改重定向或加 timeout)。
+- **D21-6 纯空转不停**:单核满载、内存平、不刷日志的循环,外部观测与合法满核计算不可分 → 只记录+提示。与工单字面"该停或该节流"不同,已向对方说明。
+- **D21-7 实现要点(落地时核实修正)**:systemd 249 不认 `-p MemoryOOMGroup`/`PidsMax`(Unknown assignment),用 `-p TasksMax` + 直接写 scope 的 `memory.oom.group`;`--slice=pi-guard.slice` 会被解析成 `pi.slice/pi-guard.slice`,故命名 `piguard.slice`;包装会带入 `INVOCATION_ID`、`SHLVL+1`,用 `env -u INVOCATION_ID SHLVL=$((SHLVL-1))` 抵消;`tool_execution_start` 的 args 是钩子改写前的原值,须自建 toolCallId→unit 表;`tool_result` 先于 `tool_execution_end`;slice 是 transient unit,空了会被 systemd 卸掉重建,限额须在每条命令启动时重写(只写一次不够,E2E 实测);OOM 归因的基线取命令起步时的计数而非末拍(进程死后那一拍已读到新计数,会把自己当基线)。
+- **D21-8 坑即 lint**:包装串 pattern lint 禁 MemoryOOMGroup/PidsMax/按命令 MemoryMax;E2E 断言测试 slice 不含连字符且不在 `piguard.slice` 之下(首版测试 slice 名 `piguard-e2e-<pid>.slice` 被解析成生产 slice 的子层)。
+- **D21-9 加载顺序耦合**:pi 按文件名字典序跑 `tool_call` 钩子、首个 block 即返回;`pi-guard` 排在 `no-rogue-background` 之后,否则包装后的命令以引号结尾,绕过其「结尾 &」检测——`pi_guard_after_rogue_guard` 守护。
+- **D21-10 回执克制**:只对被干预/被标注/≥30s 的命令追加 `[pi-guard]` 文本块,普通短命令不追加(防上下文膨胀,同 todo 双膨胀教训);日志只记 ≥2s 或非 normal 或非 contained。
+- **D21-11 降级**:systemd 不可用或包装启动失败 → 仅观测模式(/proc 找新起的会话首进程:ppid=pi ∧ pgid=sid=pid ∧ 启动时刻≥tool_call ∧ 不在调用前快照里;argv 末项相等优先)。bash 的 exec 优化会让 `bash -c "python3 -c …"` 的 cmdline 变成 python,单靠 argv 匹配会漏——故加排除法。用户态硬顶=进程树 RssAnon ≥ 聚合线 → SIGKILL。
+- **D21-12 CI**:行为 lint(driver 重放)需要 node,workflow 加 setup-node 24(`--experimental-strip-types`)。
