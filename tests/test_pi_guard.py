@@ -60,9 +60,9 @@ class TestShellQuoteAndWrap:
 
     def test_wrap_shape_and_marker(self, unit: dict) -> None:
         wrap = unit["wrap"]
-        assert wrap["unit"] == "pi-guard-4242-7"
+        assert wrap["unit"] == "pi-guard-4242-a1b2c3-7"
         assert wrap["wrapped"].startswith(
-            "exec '/usr/bin/systemd-run' --user --scope --quiet --collect --unit=pi-guard-4242-7 --slice=piguard.slice "
+            "exec '/usr/bin/systemd-run' --user --scope --quiet --collect --unit=pi-guard-4242-a1b2c3-7 --slice=piguard.slice "
             "-p MemorySwapMax=0 -p TasksMax=4096 -- '/usr/bin/env' -u INVOCATION_ID SHLVL=$((SHLVL - 1)) '/bin/bash' -c "
         )
         assert wrap["wrapped"].endswith("'echo '\\''it'\\'' \"is\" $HOME'")

@@ -67,7 +67,7 @@ async function unit() {
 		return { value, quoted, roundTrip: probe.stdout === value };
 	});
 	const wrapConfig = configWith({});
-	const unit = guard.nextUnitName(4242, 7);
+	const unit = guard.nextUnitName(4242, "a1b2c3", 7);
 	const wrapped = guard.wrapCommand("echo 'it' \"is\" $HOME", unit, wrapConfig);
 	out.wrap = {
 		unit,
@@ -385,6 +385,7 @@ async function runCall(handlers, ctx, tool, call) {
 	return {
 		id: call.id,
 		rewritten: input.command !== original,
+		unit: /--unit=(pi-guard-\S+)/.exec(input.command)?.[1] ?? "",
 		isError,
 		exitCode: result.structuredContent?.exit_code ?? null,
 		hookStructured: hook?.structuredContent === undefined ? null : JSON.stringify(hook.structuredContent) === JSON.stringify(result.structuredContent),
@@ -397,16 +398,21 @@ async function runSpec() {
 	const configPath = path.join(home, "pi-guard.json");
 	fs.writeFileSync(configPath, JSON.stringify(spec.config ?? {}));
 	process.env.PI_GUARD_CONFIG = configPath;
-	const handlers = {};
-	const commands = [];
-	const notes = [];
-	const ctx = { hasUI: true, isIdle: () => true, cwd: process.cwd(), ui: { notify: (message, type) => notes.push({ message, type }) } };
-	await guard.default({
-		on: (event, handler) => {
-			handlers[event] = handler;
-		},
-		registerCommand: (name, options) => commands.push({ name, options }),
-	});
+	const instances = [{ impl: guard }];
+	for (let index = 1; index < (spec.instances ?? 1); index += 1) instances.push({ impl: await import(`../extensions/pi-guard.ts?instance=${index}`) });
+	for (const instance of instances) {
+		instance.handlers = {};
+		instance.commands = [];
+		instance.notes = [];
+		instance.ctx = { hasUI: true, isIdle: () => true, cwd: process.cwd(), ui: { notify: (message, type) => instance.notes.push({ message, type }) } };
+		await instance.impl.default({
+			on: (event, handler) => {
+				instance.handlers[event] = handler;
+			},
+			registerCommand: (name, options) => instance.commands.push({ name, options }),
+		});
+	}
+	const { handlers, commands, notes, ctx } = instances[0];
 	await new Promise((resolve) => setTimeout(resolve, spec.settleMs ?? 500));
 	let tool = null;
 	if (spec.tool === "pi") {
@@ -417,7 +423,10 @@ async function runSpec() {
 	const limitOf = (sliceDir, name) => (sliceDir === null || !fs.existsSync(path.join(sliceDir, name)) ? null : fs.readFileSync(path.join(sliceDir, name), "utf8").trim());
 	let limitsDuringLastCall = null;
 	for (const [index, item] of spec.calls.entries()) {
-		const started = (Array.isArray(item) ? item : [item]).map((call) => runCall(handlers, ctx, tool, call));
+		const started = (Array.isArray(item) ? item : [item]).map((call) => {
+			const runner = instances[call.via ?? 0];
+			return runCall(runner.handlers, runner.ctx, tool, call);
+		});
 		if (spec.limitsDuringLastCall && index === spec.calls.length - 1) {
 			await new Promise((resolve) => setTimeout(resolve, 700));
 			await commands[0].options.handler("", ctx);

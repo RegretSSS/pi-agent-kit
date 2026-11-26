@@ -65,7 +65,7 @@
 
 - 范围：bash 工具的每一次调用（含 codemode 嵌套调用与子 agent 会话——同走 `tool_call` 钩子）；落盘后下次会话启动生效，不打断在跑会话
 - 事件顺序（以 pi 1.5.2 的 agent-loop 为准）：`tool_execution_start` → `tool_call` → 执行 → `tool_result` → `tool_execution_end`。改写命令与登记跟踪必须同在 `tool_call` 里；`tool_execution_start` 早于 `tool_call`，不能依赖它
-- 隔离底座：cgroup v2。`tool_call` 钩子把命令原地改写为 `exec systemd-run --user --scope … -- env -u INVOCATION_ID SHLVL=$((SHLVL-1)) /bin/bash -c <原命令>`，每条命令一个 scope，全部落在 `piguard.slice` 下；PID/进程组/cwd/env/退出码与未包装时一致
+- 隔离底座：cgroup v2。`tool_call` 钩子把命令原地改写为 `exec systemd-run --user --scope … -- env -u INVOCATION_ID SHLVL=$((SHLVL-1)) /bin/bash -c <原命令>`，每条命令一个 scope（unit 名 `pi-guard-<pid>-<实例随机段>-<序号>`，同进程多实例不撞名），全部落在 `piguard.slice` 下；PID/进程组/cwd/env/退出码与未包装时一致
 - 机器存活线（不看类型）：slice 聚合 `memory.max = ⌊MemTotal×(1−reserveFrac)⌋`（默认 75%，本机约 11.7GB）+ `memory.swap.max=0`；scope 启动后写 `memory.oom.group=1`，触顶时内核挑最大进程所在的**那条命令整组终止**，同 slice 的其他命令不受影响。slice 变空时 systemd 会把限额重置回 `max`，故有命令在跟踪时每个采样节拍校验并补写
 - 判型与动作（默认值，均可配）：
 
@@ -81,7 +81,7 @@
 - 降级：systemd 用户管理器不可用，或包装后 <1s 失败且文本形如 `Failed to connect to bus` → 仅观测模式（/proc 找 shell、进程树采样、用户态硬顶与同一套空转判据），每 60s 重探；降级的那次调用回执提示「命令没有执行，请重试」
 - 日志：`~/.pi/agent/pi-guard/log.jsonl`（`PI_GUARD_LOG_DIR` 可改目录；>1MB 轮转为 `.1`），只记 ≥2s / 非 normal / 非 contained 的命令；`/guard` 显示模式、阈值与最近 10 条
 - 配置：`~/.pi/agent/pi-guard.json`，键见 `DEFAULT_CONFIG`（`enabled`、`reserveFrac`、`sliceMaxBytes`、`slice`、`spinWindowSec`、`minOutBytesPerSec`、`maxInBytesPerSec`、`repeatFrac`…）；测试经 `PI_GUARD_CONFIG` 指定路径
-- 测试面：`tests/pi_guard_driver.mjs`（`unit` 纯函数时间线重放；`run` 以假 pi API + 假 bash 工具跑仅观测模式，事件按 pi 的真实顺序发射）；`lints/pi_guard_e2e_containment.py` 用 pi 真实 bash 工具 + 真实 systemd-run 跑隔离模式，slice 名独立于生产（不得含连字符——systemd 把连字符当层级分隔），不可用时跳过并说明；`lints/pi_guard_real_session.py` 起**真实 `pi -p` 进程**（隔离的 agent 目录 + 指向本地脚本化模型服务的自定义提供方，零 token 成本），断言跟踪、限额在位与补回、空转即停在真实事件顺序下成立；`lints/pi_guard_tool_call_order.py` 钉住事件顺序
+- 测试面：`tests/pi_guard_driver.mjs`（`unit` 纯函数时间线重放；`run` 以假 pi API + 假 bash 工具跑仅观测模式，事件按 pi 的真实顺序发射）；`lints/pi_guard_e2e_containment.py` 用 pi 真实 bash 工具 + 真实 systemd-run 跑隔离模式，slice 名独立于生产（不得含连字符——systemd 把连字符当层级分隔），不可用时跳过并说明；`lints/pi_guard_real_session.py` 起**真实 `pi -p` 进程**（隔离的 agent 目录 + 指向本地脚本化模型服务的自定义提供方，零 token 成本），断言跟踪、限额在位与补回、空转即停在真实事件顺序下成立；`lints/pi_guard_tool_call_order.py` 钉住事件顺序；`lints/pi_guard_unit_names_unique.py` 断言同进程两个扩展实例并发时 unit 名不撞车
 
 ## 部署（每件完成即部署+实测，独立 commit）
 

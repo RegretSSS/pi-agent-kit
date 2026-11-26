@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir, totalmem } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -157,8 +158,8 @@ export function wrapFits(wrapped: string): boolean {
 	return Buffer.byteLength(wrapped, "utf8") <= MAX_ARGV_BYTES;
 }
 
-export function nextUnitName(pid: number, seq: number): string {
-	return `pi-guard-${pid}-${seq}`;
+export function nextUnitName(pid: number, instance: string, seq: number): string {
+	return `pi-guard-${pid}-${instance}-${seq}`;
 }
 
 export type ShellToken = { text: string; quoted: boolean; redirect: boolean };
@@ -821,7 +822,6 @@ const MODE_LABEL: Record<Mode, string> = {
 	contained: "cgroup 隔离",
 	observed: "仅观测(用户态兜底)",
 };
-let unitSeq = 0;
 let bootMs: number | null = null;
 
 function readText(path: string): string | null {
@@ -942,6 +942,8 @@ export class Guard {
 	readonly logFile: string;
 	mode: Mode = "probing";
 	sliceDir = "";
+	private readonly instance = randomBytes(3).toString("hex");
+	private seq = 0;
 	private readonly tracked = new Map<string, Tracked>();
 	private ticker: ReturnType<typeof setInterval> | null = null;
 	private reprobe: ReturnType<typeof setTimeout> | null = null;
@@ -991,7 +993,7 @@ export class Guard {
 		let unit = "";
 		let wrapped: string | null = null;
 		if (this.mode === "contained") {
-			const candidate = nextUnitName(process.pid, (unitSeq += 1));
+			const candidate = nextUnitName(process.pid, this.instance, (this.seq += 1));
 			const candidateCommand = wrapCommand(command, candidate, this.config);
 			if (wrapFits(candidateCommand)) {
 				wrapped = candidateCommand;
@@ -1223,7 +1225,7 @@ export class Guard {
 			else this.probeFailed();
 		};
 		try {
-			const unit = `${nextUnitName(process.pid, (unitSeq += 1))}-probe`;
+			const unit = `${nextUnitName(process.pid, this.instance, (this.seq += 1))}-probe`;
 			const child = spawn(this.config.systemdRun, ["--user", "--scope", "--quiet", "--collect", `--unit=${unit}`, `--slice=${this.config.slice}`, "--", "/bin/sh", "-c", "cat /proc/self/cgroup"], {
 				stdio: ["ignore", "pipe", "ignore"],
 			});
