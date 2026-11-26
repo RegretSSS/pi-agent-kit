@@ -74,6 +74,8 @@ async function unit() {
 		wrapped,
 		marker: guard.isWrapped(wrapped),
 		plainMarked: guard.isWrapped("echo --unit=pi-guard-x"),
+		bodyMarked: guard.isWrapped("cat extensions/pi-guard.ts; grep -n -- --unit=pi-guard- lints/"),
+		slowWrappedMarked: guard.isWrapped(`exec '/usr/bin/systemd-run' --user --scope --quiet --collect --unit=pi-guard-1-ab12cd-3 --slice=piguard.slice -p MemorySwapMax=0 -- /bin/true`),
 		smallFits: guard.wrapFits(wrapped),
 		hugeFits: guard.wrapFits(guard.wrapCommand("x".repeat(140_000), unit, wrapConfig)),
 		quoteHeavyFits: guard.wrapFits(guard.wrapCommand("'".repeat(60_000), unit, wrapConfig)),
@@ -125,6 +127,14 @@ async function unit() {
 		["docker run img python3 -c 'x'", false],
 	].map(([command, expected]) => ({ command, expected, actual: guard.isInlineScript(command) }));
 
+	out.eligible = [
+		[HOT_LOOP, true],
+		["timeout 300 pip install -r requirements.txt && python3 -u - <<'EOF'\nwhile True:\n    print(\"30 秒后重试\")\nEOF", true],
+		["timeout 60 python3 - <<'EOF'\nwhile True:\n    print(\"x\")\nEOF", false],
+		["/usr/bin/timeout 60 python3 -u -c 'while True: print(1)'", false],
+		["timeout 300 pip install -r requirements.txt", false],
+		["timeout 60 cd /srv/app && git status --porcelain; python3 - <<'EOF'\nwhile True:\n    print(\"x\")\nEOF", true],
+	].map(([command, expected]) => ({ command, expected, actual: guard.isInlineScript(command) && !guard.isExplicitlyBounded(command, undefined) }));
 	out.bounded = [
 		["x", 30, true],
 		["x", 0, false],
@@ -139,6 +149,12 @@ async function unit() {
 		["echo timeout 5", undefined, false],
 		["curl --max-time 5 x", undefined, false],
 		["cat <<'EOF'\ntimeout 5 x\nEOF", undefined, false],
+		["timeout 300 pip install -r requirements.txt && python3 -u - <<'EOF'\nwhile True:\n    print(\"30 秒后重试\")\nEOF", undefined, false],
+		["timeout 10 cat x | python3 -c 'import sys; sys.stdin.read()'", undefined, false],
+		["/usr/bin/timeout 60 python3 -c 'x' && python3 -c 'x'", undefined, false],
+		["timeout 5; python3 -c 'x'", undefined, false],
+		["/usr/bin/timeout 3600 python3 -c 'x'", undefined, true],
+		["timeout 60 python3 -c 'x' && sleep 30", undefined, true],
 	].map(([command, timeout, expected]) => ({ command, expected, actual: guard.isExplicitlyBounded(command, timeout) }));
 
 	const repeatConfig = configWith({});
@@ -247,6 +263,15 @@ async function unit() {
 	killedCeiling.killed = "ceiling";
 	killedCeiling.peakAnon = 300 * MB;
 	out.finalize.ceiling = guard.finalizeRun(killedCeiling, 0, 0, true, 137, oomConfig);
+	const wrapFailureText = "Failed to connect to bus: No such file or directory\n\nCommand exited with code 1";
+	out.wrapFailure = {
+		real: guard.isWrapFailure(wrapFailureText, true, 20, false),
+		duplicateUnit: guard.isWrapFailure("Failed to start pi-guard-1-ab12cd-3.scope: Unit pi-guard-1-ab12cd-3.scope already exists.\n\nCommand exited with code 1", true, 20, false),
+		successfulPrint: guard.isWrapFailure("Failed to start api.service\n", false, 5, false),
+		failingPrintAfterOwnOutput: guard.isWrapFailure("step one ok\nFailed to start api.service\n\nCommand exited with code 1", true, 5, false),
+		slow: guard.isWrapFailure(wrapFailureText, true, 1500, false),
+		scopeSeen: guard.isWrapFailure(wrapFailureText, true, 20, true),
+	};
 	out.annotation = {
 		spin: guard.annotationFor(killedSpin, oomConfig, 65_000, false),
 		accumulate: guard.annotationFor(killedCeiling, oomConfig, 9000, false),
@@ -266,6 +291,13 @@ async function unit() {
 		})(),
 		maxFromTotal: guard.sliceMaxBytesFor(16 * GB, guard.mergeConfig({})),
 		maxOverride: guard.sliceMaxBytesFor(16 * GB, guard.mergeConfig({ sliceMaxBytes: 1000, reserveFrac: 0.9 })),
+		zeroCeilingIgnored: guard.sliceMaxBytesFor(16 * GB, guard.mergeConfig({ sliceMaxBytes: 0 })) === guard.sliceMaxBytesFor(16 * GB, guard.mergeConfig({})),
+		negativeCeilingIgnored: guard.sliceMaxBytesFor(16 * GB, guard.mergeConfig({ sliceMaxBytes: -1 })) === guard.sliceMaxBytesFor(16 * GB, guard.mergeConfig({})),
+		fractionCeilingFloored: guard.sliceMaxBytesFor(16 * GB, guard.mergeConfig({ sliceMaxBytes: 1234.9 })),
+		fastTick: guard.mergeConfig({ tickMs: 50 }).rateWindowMs,
+		hugeTick: guard.mergeConfig({ tickMs: 1e9 }).tickMs,
+		longLeakWindow: guard.mergeConfig({ leakWindowSec: 9999 }).leakWindowSec,
+		defaultsSpanRateWindow: guard.mergeConfig({}).tickMs * 32 >= guard.mergeConfig({}).rateWindowMs * 2,
 		missing: guard.loadConfig(path.join(home, "nope.json")).spinWindowSec,
 		malformed: (() => {
 			const file = path.join(home, "bad.json");

@@ -71,7 +71,7 @@
 
 | 类型 | 判据 | 动作 |
 |---|---|---|
-| 空转热循环 | 内联脚本 ∧ 无显式时限 ∧ 连续 60s：每拍都有新输出且主导行（数字/时间戳归一后）占非空行 ≥90%、行数 ≥20、近 5s 输出 ≥100KB/s、读入 ≤20KB/s | 停（写 scope 的 `cgroup.kill`），回执附证据并折叠重复输出 |
+| 空转热循环 | 内联脚本 ∧ 该段无显式时限（`timeout` 只管到它所在的段；工具的 `timeout` 参数管整条）∧ 连续 60s：每拍都有新输出且主导行（数字/时间戳归一后）占非空行 ≥90%、行数 ≥20、近 5s 输出 ≥100KB/s、读入 ≤20KB/s | 停（写 scope 的 `cgroup.kill`），回执附证据并折叠重复输出 |
 | 无界累积 | 内存涨到硬顶被内核终止（slice `memory.events` 的 `oom_kill` 在命令末段上升 ∧ 退出码 137） | 内核已停，回执说明硬顶 |
 | 合法大内存 | 峰值 anon ≥2GB 且非上述两种结束 | 不动，记一行 |
 | 缓慢增长（疑似泄漏） | 5s 包络下沿连续 300s 不回落且增速 ≥1MB/s | 不动，回执标注 |
@@ -80,7 +80,7 @@
 - 回执：`tool_result` 追加文本块 `[pi-guard] …`（替换 content 必须原样带回 structuredContent）；普通短命令不追加，仅被干预/被标注/历时 ≥30s 的命令追加
 - 降级：systemd 用户管理器不可用，或包装后 <1s 失败且文本形如 `Failed to connect to bus` → 仅观测模式（/proc 找 shell、进程树采样、用户态硬顶与同一套空转判据），每 60s 重探；降级的那次调用回执提示「命令没有执行，请重试」
 - 日志：`~/.pi/agent/pi-guard/log.jsonl`（`PI_GUARD_LOG_DIR` 可改目录；>1MB 轮转为 `.1`），只记 ≥2s / 非 normal / 非 contained 的命令；`/guard` 显示模式、阈值与最近 10 条
-- 配置：`~/.pi/agent/pi-guard.json`，键见 `DEFAULT_CONFIG`（`enabled`、`reserveFrac`、`sliceMaxBytes`、`slice`、`spinWindowSec`、`minOutBytesPerSec`、`maxInBytesPerSec`、`repeatFrac`…）；测试经 `PI_GUARD_CONFIG` 指定路径
+- 配置：`~/.pi/agent/pi-guard.json`，键见 `DEFAULT_CONFIG`（`enabled`、`reserveFrac`、`sliceMaxBytes`（只接受正数）、`slice`、`spinWindowSec`、`minOutBytesPerSec`、`maxInBytesPerSec`、`repeatFrac`…）；`tickMs` 夹到 [50, 5000]，`rateWindowMs` 不超过时间线跨度的一半；测试经 `PI_GUARD_CONFIG` 指定路径
 - 测试面：`tests/pi_guard_driver.mjs`（`unit` 纯函数时间线重放；`run` 以假 pi API + 假 bash 工具跑仅观测模式，事件按 pi 的真实顺序发射）；`lints/pi_guard_e2e_containment.py` 用 pi 真实 bash 工具 + 真实 systemd-run 跑隔离模式，slice 名独立于生产（不得含连字符——systemd 把连字符当层级分隔），不可用时跳过并说明；`lints/pi_guard_real_session.py` 起**真实 `pi -p` 进程**（隔离的 agent 目录 + 指向本地脚本化模型服务的自定义提供方，零 token 成本），断言跟踪、限额在位与补回、空转即停在真实事件顺序下成立；`lints/pi_guard_tool_call_order.py` 钉住事件顺序；`lints/pi_guard_unit_names_unique.py` 断言同进程两个扩展实例并发时 unit 名不撞车
 
 ## 部署（每件完成即部署+实测，独立 commit）

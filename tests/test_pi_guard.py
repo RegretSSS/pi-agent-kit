@@ -67,7 +67,9 @@ class TestShellQuoteAndWrap:
         )
         assert wrap["wrapped"].endswith("'echo '\\''it'\\'' \"is\" $HOME'")
         assert wrap["marker"] is True
-        assert wrap["plainMarked"] is True
+        assert wrap["plainMarked"] is False
+        assert wrap["bodyMarked"] is False
+        assert wrap["slowWrappedMarked"] is True
         assert "-p MemoryMax" not in wrap["wrapped"]
         assert "MemoryOOMGroup" not in wrap["wrapped"]
 
@@ -92,6 +94,16 @@ class TestCommandClassification:
 
     def test_explicit_time_bound_detection(self, unit: dict) -> None:
         assert [item for item in unit["bounded"] if item["expected"] != item["actual"]] == []
+
+    def test_timeout_on_another_segment_does_not_exempt_inline_loop(self, unit: dict) -> None:
+        assert [item for item in unit["eligible"] if item["expected"] != item["actual"]] == []
+
+    def test_wrap_failure_needs_failed_single_line(self, unit: dict) -> None:
+        verdict = unit["wrapFailure"]
+        assert verdict == {"real": True, "duplicateUnit": True, "successfulPrint": False, "failingPrintAfterOwnOutput": False, "slow": False, "scopeSeen": False}
+
+    def test_is_wrapped_only_matches_wrapper_head(self, unit: dict) -> None:
+        assert unit["wrap"]["bodyMarked"] is False and unit["wrap"]["slowWrappedMarked"] is True
 
 
 class TestOutputShape:
@@ -177,6 +189,16 @@ class TestConfig:
             "repeatFrac": 1,
             "maxInBytesPerSec": 20480,
         }
+
+    def test_non_positive_ceiling_override_is_ignored(self, unit: dict) -> None:
+        config = unit["config"]
+        assert config["zeroCeilingIgnored"] is True and config["negativeCeilingIgnored"] is True
+        assert config["fractionCeilingFloored"] == 1234
+
+    def test_timeline_always_spans_rate_window(self, unit: dict) -> None:
+        config = unit["config"]
+        assert config["defaultsSpanRateWindow"] is True
+        assert config["fastTick"] == 800 and config["hugeTick"] == 5000 and config["longLeakWindow"] == 320
 
     def test_ceiling_derives_from_total_memory_unless_overridden(self, unit: dict) -> None:
         assert unit["config"]["maxFromTotal"] == 12884901888
@@ -323,3 +345,54 @@ class TestContainedDegrade:
         assert out["status"].startswith("pi-guard:仅观测")
         assert (slice_dir / "memory.max").read_text().strip() == str(7 * 1024 * MB)
         assert (slice_dir / "memory.swap.max").read_text().strip() == "0"
+
+
+def late_scope_script(root: Path) -> Path:
+    script = root / "fake-systemd-run-late"
+    script.write_text(
+        "#!/bin/sh\n"
+        "case \"$*\" in\n"
+        "  *'cat /proc/self/cgroup'*) echo '0::/user.slice/user-1000.slice/user@1000.service/fake.slice/probe.scope'; exit 0;;\n"
+        "esac\n"
+        "unit=\"\"\n"
+        "for arg in \"$@\"; do case \"$arg\" in --unit=*) unit=\"${arg#--unit=}\";; esac; done\n"
+        "cmd=$(printf '%s\\n' \"$@\" | tail -n 1)\n"
+        "scope=\"$PI_FAKE_ROOT/user.slice/user-1000.slice/user@1000.service/fake.slice/$unit.scope\"\n"
+        "sleep 4\n"
+        "mkdir -p \"$scope\"\n"
+        "printf 'anon 104857600\\n' > \"$scope/memory.stat\"\n"
+        "printf 'usage_usec 1000000\\n' > \"$scope/cpu.stat\"\n"
+        ": > \"$scope/cgroup.procs\"\n"
+        "\"/bin/bash\" -c \"$cmd\"\n"
+        "rc=$?\n"
+        "rm -f \"$scope/memory.stat\" \"$scope/cpu.stat\" \"$scope/cgroup.procs\"\n"
+        "rmdir \"$scope\" 2>/dev/null\n"
+        "exit $rc\n"
+    )
+    script.chmod(0o755)
+    return script
+
+
+class TestContainedLateScope:
+    def test_scope_that_appears_after_the_poll_window_is_still_adopted(self, tmp_path: Path) -> None:
+        root = tmp_path / "cgroup"
+        slice_dir = root / "user.slice/user-1000.slice/user-1000.service"
+        slice_dir = root / "user.slice/user-1000.slice/user@1000.service/fake.slice"
+        slice_dir.mkdir(parents=True)
+        (root / "cgroup.controllers").write_text("memory pids\n")
+        (slice_dir / "cgroup.procs").write_text("")
+        (slice_dir / "memory.events").write_text("low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n")
+        (slice_dir / "memory.max").write_text("max\n")
+        (slice_dir / "memory.swap.max").write_text("max\n")
+        spec = {
+            "env": {"PI_GUARD_CGROUP_ROOT": str(root), "PI_FAKE_ROOT": str(root)},
+            "config": {**OBSERVED, "systemdRun": str(late_scope_script(tmp_path)), "slice": "fake.slice", "sliceMaxBytes": 7 * 1024 * MB},
+            "calls": [{"id": "late", "command": "sleep 2; echo late-ok"}],
+        }
+        out = drive("run", spec)
+        late = by_id(out, "late")
+        assert late["rewritten"] is True and late["exitCode"] == 0
+        assert "late-ok" in texts(late)
+        assert "[pi-guard] 用量:" in texts(late), texts(late)
+        assert [line["mode"] for line in out["log"]] == ["contained"]
+        assert (slice_dir / "memory.max").read_text().strip() == str(7 * 1024 * MB)

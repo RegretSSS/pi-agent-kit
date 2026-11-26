@@ -5,7 +5,6 @@ import { homedir, totalmem } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI, ToolResultEventResult } from "@earendil-works/pi-coding-agent";
 
-const WRAP_MARKER = "--unit=pi-guard-";
 const MAX_ARGV_BYTES = 131000;
 const TASKS_MAX = 4096;
 const CGROUP_ROOT = process.env.PI_GUARD_CGROUP_ROOT ?? "/sys/fs/cgroup";
@@ -43,7 +42,11 @@ const SAMPLE_CPU = 1;
 const SAMPLE_READ = 2;
 const SAMPLE_WRITTEN = 3;
 const SAMPLE_OOM = 4;
-const WRAP_FAILURE = /^Failed to (?:connect to bus|start|create|launch|set|activate|lookup|add)/m;
+const MIN_TICK_MS = 50;
+const MAX_TICK_MS = 5000;
+const MIN_RATE_WINDOW_MS = 500;
+const WRAP_HEAD = /^exec '[^'\n]+' --user --scope --quiet --collect --unit=pi-guard-/;
+const WRAP_FAILURE = /^Failed to (?:connect to bus|start|create|launch|set|activate|lookup|add)[^\n]*\n+Command exited with code 1$/;
 const EMPTY_SAMPLE: readonly number[] = [0, 0, 0, 0, 0];
 
 export type GuardConfig = {
@@ -100,6 +103,7 @@ export function mergeConfig(raw: unknown): GuardConfig {
 	for (const key of CONFIG_KEYS) {
 		const value = source[key];
 		const fallback = DEFAULT_CONFIG[key];
+		if (fallback === null) continue;
 		if (typeof fallback === "boolean" ? typeof value === "boolean" : typeof fallback === "string" ? typeof value === "string" && value !== "" : typeof value === "number" && Number.isFinite(value)) {
 			Object.assign(config, { [key]: value });
 		}
@@ -110,8 +114,9 @@ export function mergeConfig(raw: unknown): GuardConfig {
 	if (!SLICE_NAME.test(config.slice)) config.slice = DEFAULT_CONFIG.slice;
 	config.reserveFrac = clamp(config.reserveFrac, 0, 0.95);
 	config.repeatFrac = clamp(config.repeatFrac, 0.5, 1);
-	config.tickMs = Math.max(config.tickMs, 50);
-	config.rateWindowMs = Math.max(config.rateWindowMs, 500);
+	config.tickMs = clamp(config.tickMs, MIN_TICK_MS, MAX_TICK_MS);
+	config.rateWindowMs = clamp(config.rateWindowMs, MIN_RATE_WINDOW_MS, (TIMELINE_SAMPLES * config.tickMs) / 2);
+	config.leakWindowSec = Math.min(config.leakWindowSec, (ENVELOPE_SAMPLES * ENVELOPE_STEP_MS) / 1000);
 	config.spinWindowSec = Math.max(config.spinWindowSec, 1);
 	config.minRepeatLines = Math.max(config.minRepeatLines, 1);
 	config.reportMinSec = Math.max(config.reportMinSec, 0);
@@ -151,7 +156,7 @@ export function wrapCommand(command: string, unit: string, config: GuardConfig):
 }
 
 export function isWrapped(command: string): boolean {
-	return command.includes(WRAP_MARKER);
+	return WRAP_HEAD.test(command);
 }
 
 export function wrapFits(wrapped: string): boolean {
@@ -371,6 +376,10 @@ export function runsInlineCode(tokens: ShellToken[]): boolean {
 	return heredoc && spec.stdinProgram && !positional;
 }
 
+export function isWrapFailure(text: string, isError: boolean, durationMs: number, scopeSeen: boolean): boolean {
+	return !scopeSeen && isError && durationMs < WRAP_FAILURE_WINDOW_MS && WRAP_FAILURE.test(text.trimEnd());
+}
+
 export function isInlineScript(source: string): boolean {
 	return shellCommands(source).some(runsInlineCode);
 }
@@ -378,21 +387,31 @@ export function isInlineScript(source: string): boolean {
 const DURATION_SHAPE = /^\.?\d/;
 const TIMEOUT_CALLERS = new Set(["xargs", "-exec", "parallel", "watch", "sudo"]);
 
-export function isExplicitlyBounded(source: string, timeout?: unknown): boolean {
-	if (typeof timeout === "number" && Number.isFinite(timeout) && timeout > 0) return true;
-	for (const tokens of shellCommands(source)) {
-		const head = tokens[commandIndex(tokens)];
-		if (head !== undefined && !head.quoted && (head.text === "timeout" || head.text === "gtimeout")) return true;
-		for (let index = 1; index + 1 < tokens.length; index += 1) {
-			const caller = tokens[index - 1];
-			const word = tokens[index];
-			const duration = tokens[index + 1];
-			if (!caller.quoted && TIMEOUT_CALLERS.has(caller.text) && !word.quoted && word.text === "timeout" && !duration.quoted && DURATION_SHAPE.test(duration.text)) {
-				return true;
-			}
-		}
+const TIMEOUT_WORDS = new Set(["timeout", "gtimeout"]);
+
+function hasTimeoutHead(tokens: ShellToken[]): boolean {
+	const head = tokens[commandIndex(tokens)];
+	if (head !== undefined && !head.quoted && TIMEOUT_WORDS.has(basename(head.text))) return true;
+	for (let index = 1; index + 1 < tokens.length; index += 1) {
+		const caller = tokens[index - 1];
+		const word = tokens[index];
+		const duration = tokens[index + 1];
+		if (!caller.quoted && TIMEOUT_CALLERS.has(caller.text) && !word.quoted && TIMEOUT_WORDS.has(basename(word.text)) && !duration.quoted && DURATION_SHAPE.test(duration.text)) return true;
 	}
 	return false;
+}
+
+function inlineIsBounded(tokens: ShellToken[]): boolean {
+	const index = commandIndex(tokens);
+	if (!runsInlineCode(tokens)) return true;
+	return tokens.slice(0, index).some((token) => !token.quoted && TIMEOUT_WORDS.has(basename(token.text)));
+}
+
+export function isExplicitlyBounded(source: string, timeout?: unknown): boolean {
+	if (typeof timeout === "number" && Number.isFinite(timeout) && timeout > 0) return true;
+	const segments = shellCommands(source);
+	if (!segments.some(hasTimeoutHead)) return false;
+	return segments.every(inlineIsBounded);
 }
 
 const ANSI_SEQUENCE = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
@@ -1024,23 +1043,23 @@ export class Guard {
 		void this.locate(entry);
 	}
 
-	private async locate(entry: Tracked): Promise<void> {
+	private attached(entry: Tracked): boolean {
 		const run = entry.run;
+		if (!run.contained) return this.findShell(entry) !== 0;
+		if (run.scopeSeen) return true;
+		if (!existsSync(join(entry.scopeDir, "cgroup.procs"))) return false;
+		run.scopeSeen = true;
+		this.enforceSlice();
+		if ((readText(join(entry.scopeDir, "memory.oom.group")) ?? "").trim() !== "1") writeCgroup(entry.scopeDir, "memory.oom.group", "1");
+		return true;
+	}
+
+	private async locate(entry: Tracked): Promise<void> {
 		const deadline = Date.now() + SCOPE_WAIT_MS;
-		while (!run.done && Date.now() < deadline) {
-			const found = run.contained ? existsSync(join(entry.scopeDir, "cgroup.procs")) : this.findShell(entry) !== 0;
-			if (found) break;
+		while (!entry.run.done && Date.now() < deadline && !this.attached(entry)) {
 			await new Promise((resolve) => setTimeout(resolve, SCOPE_POLL_MS));
 		}
-		if (run.done) return;
-		if (run.contained) {
-			if (!existsSync(join(entry.scopeDir, "cgroup.procs"))) return;
-			run.scopeSeen = true;
-			this.enforceSlice();
-			if ((readText(join(entry.scopeDir, "memory.oom.group")) ?? "").trim() !== "1") writeCgroup(entry.scopeDir, "memory.oom.group", "1");
-		} else if (this.findShell(entry) === 0) {
-			return;
-		}
+		if (entry.run.done) return;
 		this.sampleAll();
 		this.startTicker();
 	}
@@ -1087,7 +1106,6 @@ export class Guard {
 
 	private sampleTree(entry: Tracked, oom: number): readonly number[] {
 		const run = entry.run;
-		if (this.findShell(entry) === 0) return [run.lastAnon, run.lastCpu, 0, 0, oom];
 		let anon = 0;
 		let cpu = 0;
 		let read = 0;
@@ -1118,6 +1136,7 @@ export class Guard {
 
 	private sampleEntry(entry: Tracked, oom: number): void {
 		const run = entry.run;
+		if (!this.attached(entry)) return;
 		const sample = run.contained ? this.sampleScope(entry, oom) : this.sampleTree(entry, oom);
 		const action = stepRun(run, Date.now(), sample, this.config);
 		if (action === "kill-spin") this.kill(entry, "spin");
@@ -1144,7 +1163,7 @@ export class Guard {
 		const now = Date.now();
 		const durationMs = now - run.startedAt;
 		const first = content.find((part) => part.type === "text" && typeof part.text === "string");
-		if (run.contained && !run.scopeSeen && durationMs < WRAP_FAILURE_WINDOW_MS && first !== undefined && WRAP_FAILURE.test(first.text ?? "")) {
+		if (run.contained && first !== undefined && isWrapFailure(first.text ?? "", isError, durationMs, run.scopeSeen)) {
 			entry.wrapFailed = true;
 			this.probeFailed();
 		}
@@ -1226,7 +1245,7 @@ export class Guard {
 		};
 		try {
 			const unit = `${nextUnitName(process.pid, this.instance, (this.seq += 1))}-probe`;
-			const child = spawn(this.config.systemdRun, ["--user", "--scope", "--quiet", "--collect", `--unit=${unit}`, `--slice=${this.config.slice}`, "--", "/bin/sh", "-c", "cat /proc/self/cgroup"], {
+			const child = spawn(this.config.systemdRun, ["--user", "--scope", "--quiet", "--collect", `--unit=${unit}`, `--slice=${this.config.slice}`, "-p", "MemorySwapMax=0", "-p", `TasksMax=${TASKS_MAX}`, "--", "/bin/sh", "-c", "cat /proc/self/cgroup"], {
 				stdio: ["ignore", "pipe", "ignore"],
 			});
 			timer = setTimeout(() => {
