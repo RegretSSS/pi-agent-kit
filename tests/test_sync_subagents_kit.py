@@ -7,16 +7,20 @@ REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "sync-subagents-kit.mjs"
 
 
+def commit_all(kit: Path) -> None:
+    git = ["git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(kit)]
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "kit"], check=True)
+
+
 def make_kit(root: Path, version: str = "0.23.2") -> Path:
     kit = root / "kit"
     (kit / "src" / "workflow").mkdir(parents=True)
     (kit / "package.json").write_text(json.dumps({"name": "@tintinweb/pi-subagents", "version": version}), encoding="utf-8")
     (kit / "src" / "index.ts").write_text("export const fromKit = 1;\n", encoding="utf-8")
     (kit / "src" / "workflow" / "task.ts").write_text("export const task = 1;\n", encoding="utf-8")
-    git = ["git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(kit)]
-    subprocess.run([*git, "init", "-q", "-b", "kit"], check=True)
-    subprocess.run([*git, "add", "-A"], check=True)
-    subprocess.run([*git, "commit", "-q", "-m", "kit"], check=True)
+    subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(kit), "init", "-q", "-b", "kit"], check=True)
+    commit_all(kit)
     return kit
 
 
@@ -53,6 +57,32 @@ def test_sync_replaces_src_with_kit_branch_and_is_idempotent(tmp_path) -> None:
     second = run(package, kit, tmp)
     assert second.returncode == 0, second.stderr
     assert "跳过" in second.stdout
+
+
+def test_sync_carries_skills_and_spots_one_left_behind(tmp_path) -> None:
+    kit = make_kit(tmp_path)
+    skill = kit / "skills" / "workflow-authoring" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("from kit\n", encoding="utf-8")
+    commit_all(kit)
+    package = make_package(tmp_path)
+    deployed = package / "skills" / "workflow-authoring" / "SKILL.md"
+    deployed.parent.mkdir(parents=True)
+    deployed.write_text("stale\n", encoding="utf-8")
+    tmp = tmp_path / "tmp"
+    tmp.mkdir()
+    first = run(package, kit, tmp)
+    assert first.returncode == 0, first.stderr
+    assert "src、skills 同步到" in first.stdout
+    assert deployed.read_text(encoding="utf-8") == "from kit\n"
+    assert not (package / "skills.replaced").exists()
+    assert "跳过" in run(package, kit, tmp).stdout
+    deployed.write_text("stale again\n", encoding="utf-8")
+    third = run(package, kit, tmp)
+    assert third.returncode == 0, third.stderr
+    assert "跳过" not in third.stdout
+    assert deployed.read_text(encoding="utf-8") == "from kit\n"
+    assert not (package / "skills.replaced").exists()
 
 
 def test_sync_refuses_on_version_mismatch_without_touching(tmp_path) -> None:

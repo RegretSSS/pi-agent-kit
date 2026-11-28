@@ -6,6 +6,7 @@ import { join } from "node:path";
 const PKG = process.env.PI_SUBAGENTS_PKG ?? join(homedir(), ".pi/agent/npm/node_modules/@tintinweb/pi-subagents");
 const KIT = process.env.PI_SUBAGENTS_KIT ?? join(homedir(), "workspace/pi-subagents-kit");
 const BRANCH = process.env.PI_SUBAGENTS_KIT_BRANCH ?? "kit";
+const SYNCED = ["src", "skills"];
 
 function kitGit(...args) {
 	return execFileSync("git", ["-C", KIT, ...args], { encoding: "utf8" }).trim();
@@ -37,25 +38,30 @@ function main() {
 		console.error(`sync-subagents-kit: ${BRANCH} 分支的基线是 ${baseline},已安装的是 ${installed}——先把 kit 分支 rebase 到已安装版本再同步`);
 		return 1;
 	}
+	const tracked = new Set(kitGit("ls-tree", "--name-only", BRANCH).split("\n"));
+	const dirs = SYNCED.filter((name) => tracked.has(name));
 	const staging = mkdtempSync(join(tmpdir(), "subagents-kit-"));
-	const archive = join(staging, "src.tar");
-	execFileSync("git", ["-C", KIT, "archive", "-o", archive, BRANCH, "src"]);
+	const archive = join(staging, "kit.tar");
+	execFileSync("git", ["-C", KIT, "archive", "-o", archive, BRANCH, ...dirs]);
 	execFileSync("tar", ["-x", "-f", archive, "-C", staging]);
-	const incoming = join(staging, "src");
-	const live = join(PKG, "src");
-	if (existsSync(live) && sameTree(incoming, live)) {
+	const trees = dirs.map((name) => [join(staging, name), join(PKG, name)]);
+	const inSync = ([incoming, live]) => existsSync(live) && sameTree(incoming, live);
+	if (trees.every(inSync)) {
 		console.log(`sync-subagents-kit: 已是 ${BRANCH} 分支内容,跳过`);
 		rmSync(staging, { recursive: true, force: true });
 		return 0;
 	}
-	const outgoing = join(PKG, "src.replaced");
-	rmSync(outgoing, { recursive: true, force: true });
-	if (existsSync(live)) renameSync(live, outgoing);
-	cpSync(incoming, live, { recursive: true });
-	rmSync(outgoing, { recursive: true, force: true });
+	for (const [incoming, live] of trees) {
+		if (inSync([incoming, live])) continue;
+		const outgoing = `${live}.replaced`;
+		rmSync(outgoing, { recursive: true, force: true });
+		if (existsSync(live)) renameSync(live, outgoing);
+		cpSync(incoming, live, { recursive: true });
+		rmSync(outgoing, { recursive: true, force: true });
+	}
 	rmSync(staging, { recursive: true, force: true });
 	rmSync(join(tmpdir(), "jiti"), { recursive: true, force: true });
-	console.log(`sync-subagents-kit: 已把 ${BRANCH}(${kitGit("rev-parse", "--short", BRANCH)}) 的 src 同步到 ${PKG},并清理 jiti 编译缓存`);
+	console.log(`sync-subagents-kit: 已把 ${BRANCH}(${kitGit("rev-parse", "--short", BRANCH)}) 的 ${dirs.join("、")} 同步到 ${PKG},并清理 jiti 编译缓存`);
 	return 0;
 }
 
