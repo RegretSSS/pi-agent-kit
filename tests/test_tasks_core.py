@@ -161,8 +161,9 @@ def test_factory_fast_exit_observable_via_precheck(tmp_path) -> None:
     assert out["notifyText"] and "code=42" in out["notifyText"]
 
 
-def test_factory_notify_held_during_busy_and_flushed(tmp_path) -> None:
-    out = drive(tmp_path, "factory-e2e", {"holdNotify": True})
-    assert out["heldSentCount"] == 0
-    assert out["flushedSentCount"] == 1
-    assert "code=3" in out["flushedText"]
+def test_factory_notify_steered_during_run_held_during_maintenance(tmp_path) -> None:
+    out = drive(tmp_path, "factory-e2e", {"notifyPhases": True})
+    run_id, maintenance_id = out["phaseIds"]
+    assert out["runSentCount"] == 1 and run_id in out["runSentText"] and "code=3" in out["runSentText"]
+    assert out["maintenanceSentCount"] == 0
+    assert out["flushedSentCount"] == 1 and maintenance_id in out["flushedText"] and "code=4" in out["flushedText"]

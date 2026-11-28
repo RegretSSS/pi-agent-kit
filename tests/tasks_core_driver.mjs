@@ -255,19 +255,26 @@ switch (scenario) {
 		await settle(payload.firstWaitMs ?? 3500);
 		const listed = await tools.task_list.execute("t2", {}, undefined, undefined, ctx);
 		out.listText = listed.content[0].text;
-		if (payload.holdNotify) {
-			idle = false;
+		if (payload.notifyPhases) {
 			sent.length = 0;
-			const second = await tools.task_create.execute("t3", { cmd: "exit 3" }, undefined, undefined, ctx);
-			await settle(3500);
-			out.heldSentCount = sent.length;
+			idle = false;
+			await handlers["agent_start"]({}, ctx);
+			const duringRun = await tools.task_create.execute("t3", { cmd: "exit 3" }, undefined, undefined, ctx);
+			await settle(3000);
+			out.runSentCount = sent.length;
+			out.runSentText = sent[0] ?? null;
+			await handlers["agent_end"]({}, ctx);
+			sent.length = 0;
+			const duringMaintenance = await tools.task_create.execute("t4", { cmd: "exit 4" }, undefined, undefined, ctx);
+			await settle(3000);
+			out.maintenanceSentCount = sent.length;
 			idle = true;
-			await settle(3500);
+			await settle(3000);
 			out.flushedSentCount = sent.length;
 			out.flushedText = sent[0] ?? null;
-			out.secondId = second.details.id;
+			out.phaseIds = [duringRun.details.id, duringMaintenance.details.id];
 		}
-		out.notifyText = payload.holdNotify ? null : (sent.find((t) => t.includes(id)) ?? null);
+		out.notifyText = payload.notifyPhases ? null : (sent.find((t) => t.includes(id)) ?? null);
 		await handlers["session_shutdown"]?.();
 		break;
 	}

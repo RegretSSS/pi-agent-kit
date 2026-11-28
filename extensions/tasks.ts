@@ -409,6 +409,7 @@ export default async function (pi: ExtensionAPI) {
 	const children = new Map<string, ChildEntry>();
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
 	let sessionIdle: (() => boolean) | null = null;
+	let agentRunning = false;
 	const pendingNotify: string[] = [];
 
 function watchChild(id: string, child: ChildProcess): ChildEntry {
@@ -441,8 +442,12 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 		}
 	}
 
+	function inMaintenance(): boolean {
+		return sessionIdle !== null && !sessionIdle() && !agentRunning;
+	}
+
 	function deliverNotify(content: string): void {
-		if (sessionIdle && !sessionIdle()) {
+		if (inMaintenance()) {
 			pendingNotify.push(content);
 			return;
 		}
@@ -461,7 +466,7 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 	}
 
 	async function sweep(): Promise<void> {
-		if (pendingNotify.length > 0 && (!sessionIdle || sessionIdle())) {
+		if (pendingNotify.length > 0 && !inMaintenance()) {
 			const merged = pendingNotify.join("\n\n");
 			pendingNotify.length = 0;
 			pi.sendMessage({ customType: "task-notify", content: merged, display: true }, { triggerTurn: true });
@@ -679,6 +684,14 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 
 	pi.on("session_shutdown", async () => {
 		stopPolling();
+	});
+
+	pi.on("agent_start", async () => {
+		agentRunning = true;
+	});
+
+	pi.on("agent_end", async () => {
+		agentRunning = false;
 	});
 
 	pi.on("agent_settled", async () => {
