@@ -22,6 +22,7 @@ async function loadPi() {
 		nativeRenderers: await load("dist/core/tools/renderers/index.js"),
 		mcpTools: await load("dist/extensions/mcp/tools.js"),
 		exportTool: await load("dist/core/export-html/tool-renderer.js"),
+		codemodeRendererModule: await load("dist/extensions/codemode/renderer.js"),
 	};
 	kit.theme = (await load("dist/modes/interactive/theme/theme.js")).theme;
 	kit.pi.initTheme("dark", false);
@@ -45,10 +46,15 @@ function definition(kit, kind, toolName) {
 		};
 	}
 	if (kind === "mcp") return { name: toolName, ...kit.mcpTools.createMcpToolRenderers("docs/search") };
+	if (kind === "codemode") {
+		const { renderCall, renderResult } = kit.codemodeRendererModule.codemodeRenderers;
+		if (typeof renderCall !== "function" || typeof renderResult !== "function") throw new Error("pi 的 codemode 渲染器不再挂在工具定义上");
+		return { name: toolName, renderCall, renderResult };
+	}
 	return kit.nativeRenderers.withBuiltInRenderers(toolName, undefined);
 }
 
-const textResult = (text, isError = false) => ({ content: [{ type: "text", text }], isError, durationMs: 1234 });
+const textResult = (text, isError = false, details) => ({ content: [{ type: "text", text }], isError, durationMs: 1234, ...(details === undefined ? {} : { details }) });
 
 function snapshot(component) {
 	const lines = component.render(100);
@@ -65,10 +71,10 @@ function play(kit, scene, resolver) {
 	component.setArgsComplete();
 	let running;
 	if (scene.partial !== undefined) {
-		component.updateResult(textResult(scene.partial), true);
+		component.updateResult(textResult(scene.partial, false, scene.partialDetails), true);
 		running = snapshot(component);
 	}
-	component.updateResult(textResult(scene.result.text, scene.result.isError), false);
+	component.updateResult(textResult(scene.result.text, scene.result.isError, scene.result.details), false);
 	return { passthrough: resolved === native, before, running, final: snapshot(component) };
 }
 
@@ -80,7 +86,7 @@ function exportPage(kit, scene, resolver) {
 		width: 100,
 	});
 	const callId = `call_${scene.name}`;
-	const result = renderer.renderResult(callId, scene.toolName, [{ type: "text", text: scene.result.text }], {}, scene.result.isError);
+	const result = renderer.renderResult(callId, scene.toolName, [{ type: "text", text: scene.result.text }], scene.result.details, scene.result.isError);
 	return {
 		call: htmlText(renderer.renderCall(callId, scene.toolName, scene.args)),
 		collapsed: htmlText(result?.collapsed),
@@ -89,6 +95,10 @@ function exportPage(kit, scene, resolver) {
 	};
 }
 
+const PLAIN_THEME = { fg: (_color, text) => text, bold: (text) => text };
+const failureText = (error, calls = "read (ok)") => `Script failed\nWall time 3.2 seconds\nOutput:\nScript error:\n${error}\n\nTool calls made before the failure (they are not undone): ${calls}`;
+const failure = (content) => ({ content: [{ type: "text", text: content }] });
+
 function pure() {
 	return {
 		sanitize: [quiet.sanitizeInline("a\x1b]0;pwn\x07b\nc\r\td\x1b[31me\x1b[0mf\x00g"), quiet.sanitizeInline("  x   y ")],
@@ -96,6 +106,7 @@ function pure() {
 		duration: [0, 1_230, 59_949, 59_999, 60_000, 90_000, 3_599_600, 3_600_000, 7_199_400, 7_260_000].map(quiet.formatDuration),
 		takesOver: [
 			["bash", { renderCall() {}, renderResult() {} }],
+			["codemode", { renderCall() {}, renderResult() {} }],
 			["mcp__x__y", { renderCall() {} }],
 			["task_create", undefined],
 			["task_create", { name: "task_create" }],
@@ -103,6 +114,28 @@ function pure() {
 			["custom", { renderCall() {} }],
 			["custom", { renderResult() {} }],
 		].map(([toolName, base]) => [toolName, quiet.takesOver(toolName, base)]),
+		builtins: [...quiet.BUILTIN_TOOLS],
+		script: [
+			quiet.scriptLines('// @options: {"timeout_ms": 60000}\nconst a = 1;\n\n  const b = 2;  \n'),
+			quiet.scriptLines("// @options: x\n// @options: y\nbody"),
+			quiet.scriptLines("// @options: only"),
+			quiet.scriptLines("{ not code"),
+			quiet.scriptLines(undefined),
+		],
+		progress: [
+			quiet.nestedCallProgress([], PLAIN_THEME),
+			quiet.nestedCallProgress([{ name: "read", status: "running" }], PLAIN_THEME),
+			quiet.nestedCallProgress([{ name: "read", status: "ok", durationMs: 12 }, { name: "grep", args: "{}", status: "error", durationMs: 1200 }], PLAIN_THEME),
+			quiet.nestedCallProgress([{ name: "write", status: "cancelled", durationMs: 0 }], PLAIN_THEME),
+			quiet.nestedCallProgress([{ name: "x", status: "weird" }, { status: "constructor" }], PLAIN_THEME),
+			quiet.nestedCallProgress([{ name: "models.classify", status: "ok", durationMs: 65_000 }], PLAIN_THEME),
+		],
+		failure: [
+			quiet.codemodeFailure(failure(failureText("TypeError: rows is not iterable\n    at <anonymous>"))),
+			quiet.codemodeFailure(failure("Invalid options: unknown key \"foo\"")),
+			quiet.codemodeFailure(failure("Script failed\nWall time 3.2 seconds\nOutput:\n")),
+			quiet.codemodeFailure({ content: [] }),
+		],
 		mcp: quiet.mcpLabel("mcp__docs__search"),
 		path: quiet.shortenPath(`${process.env.HOME}/x/y`),
 	};

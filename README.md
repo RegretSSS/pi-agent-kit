@@ -10,7 +10,7 @@
 - **compact 闭环**:模型在自然工作边界自主发起压缩(摘要强制携带 `<fold-index>` 索引头,单活代际链,蒸馏并集),压缩完成自动注入 `[compact 完成]` 续作唤醒词(按 fold-index 重定位,willRetry 时不扰)
 - **context-gauge 自主运行监控**:工具结果按需附加水位+时钟行(15min 时间档/5% 水位档/30% 提示 50% 催压缩/50% 后每工具直报),TUI footer 常显——频控对齐 CC gauge_hook
 - **pi-guard**:每条 bash 命令跑在各自的 cgroup scope 里(slice 聚合内存硬顶、禁 swap),对失控的临时脚本判型——空转热循环即停并附证据,无界累积被内核终止时在回执里说明,合法大内存与缓慢增长只标注不动;systemd 不可用时降级为仅观测
-- **quiet-tui**:工具调用折叠成单行(自写;同一实测台 101 行 → 18 行),Ctrl+O 展开时委托回 pi 原渲染器;只改显示,不改 schema、模型可见结果不变
+- **quiet-tui**:工具调用折叠成单行(自写;同一实测台 101 行 → 18 行),codemode 也收(脚本首行 + 嵌套调用进度一行),Ctrl+O 展开时委托回 pi 原渲染器;只改显示,不改 schema、模型可见结果不变
 - **两个拦截扩展**:`no-long-sleep`——会话内 `sleep` 折算超过 100 秒即拦,指向 `task_create`/定时任务;`no-rogue-background`——`nohup`/`setsid`/`disown`/结尾 `&` 的后台化即拦,不允许后台跑完不通报的任务
 - **后台工具统一(D25)**:task_create + bg_list / bg_status / bg_log / bg_stop / bg_schedule——命令任务、子代理、workflow run、定时任务一套句柄(12 个工具收到 6 个);子代理与 workflow 走 pi-subagents kit 分支的 RPC 通道,不可达时回落本机 journal
 - **AGENTS.md 管理节部署**:CommonMark 围栏感知的节级替换,幂等,节外用户内容原样保留

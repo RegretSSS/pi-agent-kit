@@ -41,6 +41,7 @@ def test_format_duration_boundaries():
 def test_takes_over_builtins_mcp_and_rendererless_tools_only():
     assert pure()["takesOver"] == [
         ["bash", True],
+        ["codemode", True],
         ["mcp__x__y", True],
         ["task_create", True],
         ["task_create", True],
@@ -53,3 +54,26 @@ def test_takes_over_builtins_mcp_and_rendererless_tools_only():
 def test_labels():
     assert pure()["mcp"] == "docs/search"
     assert pure()["path"] == "~/x/y"
+
+
+def test_builtin_roster():
+    assert pure()["builtins"] == ["bash", "powershell", "read", "edit", "write", "grep", "find", "ls", "codemode"]
+
+
+def test_script_summary_skips_the_options_line_and_blank_rows():
+    assert pure()["script"] == [["const a = 1;", "  const b = 2;"], ["body"], [], ["{ not code"], []]
+
+
+def test_nested_call_progress_names_the_latest_call_and_counts_failures():
+    assert pure()["progress"] == [
+        "",
+        "1 call · … read",
+        "2 calls · ✗ grep 1.2s · 1 failed",
+        "1 call · ⊘ write",
+        "2 calls · … ?",
+        "1 call · ✓ models.classify 1m 5s",
+    ]
+
+
+def test_codemode_failure_drops_the_script_headers():
+    assert pure()["failure"] == ["TypeError: rows is not iterable", 'Invalid options: unknown key "foo"', "", ""]

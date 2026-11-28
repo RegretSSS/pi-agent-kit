@@ -90,6 +90,7 @@
 
 - 经 `pi.registerToolRenderer` 把工具调用折叠成单行：每次调用 = 硬空行 + 摘要行（`$ cmd ✓ 1.2s`／`✗` + 错误首行），运行中显示末 3 行预览；Ctrl+O 或鼠标点击展开时委托回 pi 原渲染器
 - 接管内建工具、`mcp__*` 与没有自带渲染器的扩展工具；自带渲染器的（Agent、SubagentWorkflow、todo）原样透传
+- 内建 codemode（pi 1.7.0 起渲染器挂在工具定义上，D32）：摘要行 = `codemode` + 脚本首个有效行（跳过 `// @options:`）+ `(+N lines)`；运行中一行嵌套调用进度（`N calls · <状态> <最近一次调用> <耗时>`，有失败加 `· K failed`）；出错给剥掉 `Script failed`／`Script error:` 头的真正错误首行；展开时委托回 pi 原渲染器
 - 只改显示：不重注册工具、不改 schema、模型可见结果不变；HTML 导出不受损
 - 参数文本入行前清 OSC/CSI/C0（单行渲染的安全前提）
 

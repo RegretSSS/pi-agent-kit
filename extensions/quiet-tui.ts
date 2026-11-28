@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import type { ExtensionAPI, ToolRenderers } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 
-export const BUILTIN_TOOLS = new Set(["bash", "powershell", "read", "edit", "write", "grep", "find", "ls"]);
+export const BUILTIN_TOOLS = new Set(["bash", "powershell", "read", "edit", "write", "grep", "find", "ls", "codemode"]);
 export const MCP_PREFIX = "mcp__";
 export const RUNNING_PREVIEW_ROWS = 3;
 export const ARG_VALUE_CHARS = 60;
@@ -12,6 +12,10 @@ const CONTROL_SEQUENCES = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][0-2A-Z]/g;
 const LEFTOVER_CONTROL_CHARS = /[\x00-\x08\x0B-\x1F\x7F]/g;
 const BLANK_RUNS = /\s+/g;
 const ANY_BLANK = /\s/;
+const CODEMODE_HEADER = /^(?:Script (?:completed|failed|error:)|Output:|Wall time [\d.]+ seconds)$/;
+const CODEMODE_OPTIONS_LINE = /^\/\/ @options:/;
+const NESTED_STATUS = new Map<string, readonly [string, string]>([["running", ["warning", "…"]], ["ok", ["success", "✓"]], ["error", ["error", "✗"]], ["cancelled", ["muted", "⊘"]]]);
+const RUNNING_MARK: readonly [string, string] = ["warning", "…"];
 
 export class DelegateToDefault extends Error {
 	constructor(slot: "renderCall" | "renderResult") {
@@ -23,7 +27,8 @@ type RenderCall = NonNullable<ToolRenderers["renderCall"]>;
 export type RenderContext = Parameters<RenderCall>[2];
 type ThemeLike = { fg(color: string, text: string): string; bold(text: string): string };
 type Tail = { truncateToWidth(text: string, maxWidth: number, ellipsis?: string): string };
-type ResultLike = { content: Array<{ type: string; text?: string }> };
+export type NestedCall = { name?: unknown; status?: unknown; durationMs?: unknown };
+type ResultLike = { content: Array<{ type: string; text?: string }>; details?: { calls?: NestedCall[] } };
 type ContextLike = Pick<RenderContext, "argsComplete" | "isPartial" | "isError" | "durationMs" | "outputPad" | "expanded">;
 
 export function sanitizeInline(text: string): string {
@@ -39,12 +44,16 @@ function stringifyScalar(value: unknown): string {
 	}
 }
 
+function clip(flat: string): string {
+	const points = Array.from(flat);
+	return points.length > ARG_VALUE_CHARS ? `${points.slice(0, ARG_VALUE_CHARS - 1).join("")}…` : flat;
+}
+
 export function shortenValue(value: unknown): string {
 	const raw = stringifyScalar(value);
 	const flat = sanitizeInline(raw);
 	if (!flat) return '""';
-	const points = Array.from(flat);
-	const body = points.length > ARG_VALUE_CHARS ? `${points.slice(0, ARG_VALUE_CHARS - 1).join("")}…` : flat;
+	const body = clip(flat);
 	return typeof value === "string" && ANY_BLANK.test(raw) ? `"${body}"` : body;
 }
 
@@ -89,7 +98,17 @@ export function callSummary(toolName: string, args: unknown, theme: ThemeLike): 
 		const glob = typeof record.glob === "string" ? plain(` (${sanitizeInline(record.glob)})`) : "";
 		return `${title(toolName)} ${accent(toolName === "grep" ? `/${pattern}/` : pattern)}${plain(` in ${shortenPath(text(record.path, "."))}`)}${glob}`;
 	}
+	if (toolName === "codemode") {
+		const lines = scriptLines(record.code);
+		const rest = lines.length - 1;
+		return `${title("codemode")} ${plain(clip(sanitizeInline(lines[0] ?? "")) || "…")}${rest > 0 ? theme.fg("muted", ` (+${rest} lines)`) : ""}`;
+	}
 	return `${title(toolName.startsWith(MCP_PREFIX) ? mcpLabel(toolName) : toolName)} ${plain(compactArgs(args))}`;
+}
+
+export function scriptLines(code: unknown): string[] {
+	if (typeof code !== "string") return [];
+	return meaningfulLines(code).filter((line) => !CODEMODE_OPTIONS_LINE.test(line));
 }
 
 export function formatDuration(ms: number): string {
@@ -126,6 +145,44 @@ export function firstLine(text: string): string {
 export function foldedResultLines(result: ResultLike, context: Pick<ContextLike, "isPartial" | "isError">, theme: ThemeLike): string[] {
 	if (context.isPartial) return tailLines(resultText(result), RUNNING_PREVIEW_ROWS).map((line) => theme.fg("toolOutput", sanitizeInline(line)));
 	if (context.isError) return [theme.fg("error", sanitizeInline(firstLine(resultText(result))) || theme.fg("error", "✗"))];
+	return [];
+}
+
+function nestedCalls(result: ResultLike): NestedCall[] {
+	return Array.isArray(result.details?.calls) ? result.details.calls : [];
+}
+
+function nestedDuration(ms: unknown): string {
+	return typeof ms === "number" && ms > 0 ? (ms < 1000 ? `${Math.round(ms)}ms` : formatDuration(ms)) : "";
+}
+
+export function nestedCallProgress(calls: NestedCall[], theme: ThemeLike): string {
+	if (calls.length === 0) return "";
+	let failed = 0;
+	for (const call of calls) if (call?.status === "error") failed++;
+	const last = calls[calls.length - 1] ?? {};
+	const [color, icon] = NESTED_STATUS.get(String(last.status)) ?? RUNNING_MARK;
+	const duration = nestedDuration(last.durationMs);
+	return `${theme.fg("muted", `${calls.length} call${calls.length === 1 ? "" : "s"}`)} · ${theme.fg(color, icon)} ${theme.fg("toolOutput", sanitizeInline(String(last.name ?? "?")))}${duration ? ` ${theme.fg("muted", duration)}` : ""}${failed > 0 ? ` ${theme.fg("error", `· ${failed} failed`)}` : ""}`;
+}
+
+export function codemodeFailure(result: ResultLike): string {
+	for (const part of result.content) {
+		if (part.type !== "text" || !part.text) continue;
+		for (const raw of part.text.split("\n")) {
+			const line = sanitizeInline(raw);
+			if (line && !CODEMODE_HEADER.test(line)) return line;
+		}
+	}
+	return "";
+}
+
+export function codemodeResultLines(result: ResultLike, context: Pick<ContextLike, "isPartial" | "isError">, theme: ThemeLike): string[] {
+	if (context.isPartial) {
+		const progress = nestedCallProgress(nestedCalls(result), theme);
+		return progress ? [progress] : tailLines(resultText(result), RUNNING_PREVIEW_ROWS).map((line) => theme.fg("toolOutput", sanitizeInline(line)));
+	}
+	if (context.isError) return [theme.fg("error", codemodeFailure(result) || "✗")];
 	return [];
 }
 
@@ -193,6 +250,7 @@ export function createQuietRenderers(toolName: string, base: ToolRenderers | und
 	const renderer = (slot: "renderCall" | "renderResult") => (base?.[slot] as ((...args: unknown[]) => Component) | undefined);
 	const innerComponent = (last: Component | undefined): Component | undefined => (last instanceof PaddedFrame ? last.inner : last instanceof RenderedRow ? undefined : last);
 	const row = (last: Component | undefined) => (last instanceof RenderedRow ? last : new RenderedRow(tail));
+	const resultLines = toolName === "codemode" ? codemodeResultLines : foldedResultLines;
 	return {
 		renderShell: "self",
 		renderCall(args, theme, context) {
@@ -212,7 +270,7 @@ export function createQuietRenderers(toolName: string, base: ToolRenderers | und
 				return new PaddedFrame(render(result, options, theme, { ...context, lastComponent: innerComponent(context.lastComponent) }), context.outputPad);
 			}
 			const target = row(context.lastComponent);
-			target.setLines(foldedResultLines(result, context, theme), context.outputPad);
+			target.setLines(resultLines(result, context, theme), context.outputPad);
 			return target;
 		},
 	};

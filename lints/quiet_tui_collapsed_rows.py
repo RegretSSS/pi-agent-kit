@@ -11,6 +11,19 @@ DRIVER = ROOT / "tests" / "quiet_tui_driver.mjs"
 OUTPUT = "\n".join(f"line of output text number {index}" for index in range(1, 31))
 LISTING = "\n".join(f"[task] bg-e2e running #{index}" for index in range(1, 13))
 LONG_COMMAND = "git -C ~/workspace/pi-subagents-kit log --oneline -8 kit && echo '--- 部署位 ---' && ls -la ~/.pi/agent/extensions/ | head -40"
+CODEMODE_SCRIPT = "\n".join([
+    '// @options: {"timeout_ms": 60000}',
+    'const rows = await tools.read({ path: "~/workspace/pi-agent-kit/SPEC.md" });',
+    "console.log(rows.length);",
+    "for (const row of rows) console.log(row.name);",
+])
+CODEMODE_CALLS = [
+    {"name": "read", "args": '{"path":"~/workspace/pi-agent-kit/SPEC.md"}', "status": "ok", "durationMs": 12},
+    {"name": "grep", "args": '{"pattern":"codemode"}', "status": "ok", "durationMs": 1200},
+    {"name": "write", "args": '{"path":"/tmp/x"}', "status": "error", "durationMs": 850, "error": "EACCES: permission denied"},
+]
+CODEMODE_DONE = "Script completed\nWall time 3.2 seconds\nOutput:\n42\n{\"a\":1}\n"
+CODEMODE_FAILED = "Script failed\nWall time 3.2 seconds\nOutput:\nScript error:\nTypeError: rows is not iterable\n    at <anonymous>\n\nTool calls made before the failure (they are not undone): read (ok), grep (ok), write (error)"
 SCENES = {
     "bash": {"toolName": "bash", "def": "builtin", "args": {"command": "sleep 4; echo X; exit 5"}, "partial": "X\nExit code: 5", "result": {"text": "X\nExit code: 5"}},
     "bash_long": {"toolName": "bash", "def": "builtin", "args": {"command": LONG_COMMAND}, "partial": "l1\nl2\nl3\nl4\nl5", "result": {"text": OUTPUT}},
@@ -20,6 +33,17 @@ SCENES = {
     "plain": {"toolName": "task_create", "def": "plain", "args": {"cmd": "sleep 4; echo X", "name": "bg-e2e"}, "result": {"text": "[task] bg-e2e started"}},
     "plain_expanded": {"toolName": "bg_list", "def": "plain", "args": {}, "expanded": True, "result": {"text": LISTING}},
     "bash_expanded": {"toolName": "bash", "def": "builtin", "args": {"command": "echo X"}, "expanded": True, "result": {"text": OUTPUT}},
+    "codemode": {
+        "toolName": "codemode", "def": "codemode", "args": {"code": CODEMODE_SCRIPT}, "partial": "",
+        "partialDetails": {"calls": [CODEMODE_CALLS[0], dict(CODEMODE_CALLS[2], status="running", durationMs=None)]},
+        "result": {"text": CODEMODE_DONE, "details": {"calls": CODEMODE_CALLS[:2]}},
+    },
+    "codemode_fail": {
+        "toolName": "codemode", "def": "codemode", "args": {"code": CODEMODE_SCRIPT}, "partial": "",
+        "partialDetails": {"calls": [CODEMODE_CALLS[0], CODEMODE_CALLS[2], dict(CODEMODE_CALLS[1], status="running", durationMs=None)]},
+        "result": {"text": CODEMODE_FAILED, "isError": True, "details": {"calls": CODEMODE_CALLS}},
+    },
+    "codemode_expanded": {"toolName": "codemode", "def": "codemode", "args": {"code": CODEMODE_SCRIPT}, "expanded": True, "result": {"text": CODEMODE_DONE, "details": {"calls": CODEMODE_CALLS[:2]}}},
     "custom": {"toolName": "Agent", "def": "custom", "args": {"prompt": "x"}, "result": {"text": "agent result"}},
     "unregistered": {"toolName": "gone_tool", "def": "unregistered", "args": {"a": "b"}, "result": {"text": "old output"}},
     "inject": {"toolName": "bash", "def": "builtin", "args": {"command": "echo hi\x1b]0;pwn\x07\nsecond\x1b[31m"}, "result": {"text": "ok"}},
@@ -58,15 +82,15 @@ def drive(scenario: str, names: list[str]) -> dict:
 def lint() -> list[str]:
     problems = []
     rendered = drive("render", list(SCENES))["results"]
-    folded = ("bash", "bash_long", "bash_fail", "read", "mcp", "plain", "unregistered", "inject")
+    folded = ("bash", "bash_long", "bash_fail", "read", "mcp", "plain", "unregistered", "inject", "codemode", "codemode_fail")
     for name in folded:
         final = rendered[name]["final"]
-        expected = 3 if name == "bash_fail" else 2
+        expected = 3 if name in ("bash_fail", "codemode_fail") else 2
         if final["rows"] != expected or final["text"][0] != "":
-            problems.append(f"{name} 折叠态结束时应为 {expected} 行(硬空行 + 摘要行{' + 错误首行' if name == 'bash_fail' else ''}),实际 {final['rows']} 行: {final['text'][:3]}")
+            problems.append(f"{name} 折叠态结束时应为 {expected} 行(硬空行 + 摘要行{' + 错误首行' if expected == 3 else ''}),实际 {final['rows']} 行: {final['text'][:3]}")
         if rendered[name]["passthrough"]:
             problems.append(f"{name} 应被 quiet-tui 接管,却原样透传")
-    for name, needle in (("bash", "$ sleep 4; echo X; exit 5"), ("bash_long", "$ git -C"), ("read", "read ~/workspace/x.ts:1-200"), ("mcp", "docs/search query=\"tool renderer\" limit=10"), ("plain", "task_create cmd=\"sleep 4; echo X\" name=bg-e2e"), ("unregistered", "gone_tool a=b")):
+    for name, needle in (("bash", "$ sleep 4; echo X; exit 5"), ("bash_long", "$ git -C"), ("read", "read ~/workspace/x.ts:1-200"), ("mcp", "docs/search query=\"tool renderer\" limit=10"), ("plain", "task_create cmd=\"sleep 4; echo X\" name=bg-e2e"), ("unregistered", "gone_tool a=b"), ("codemode", "codemode const rows = await tools.read(")):
         if needle not in rendered[name]["final"]["text"][1]:
             problems.append(f"{name} 摘要行应含 {needle!r}: {rendered[name]['final']['text'][1]}")
     if "✓ 1.2s" not in rendered["bash"]["final"]["text"][1]:
@@ -91,9 +115,29 @@ def lint() -> list[str]:
         problems.append("无自带渲染器的工具展开后应看到全文")
     if "line of output text number 30" not in "\n".join(rendered["bash_expanded"]["final"]["text"]):
         problems.append("内建工具展开后应委托回 pi 原渲染器给出全文")
-    pages = drive("export", ["bash_expanded", "plain", "bash_fail"])["pages"]
+    summary = rendered["codemode"]["final"]["text"][1]
+    if "(+2 lines)" not in summary or "…" not in summary or "console.log" in summary or "@options" in summary:
+        problems.append(f"codemode 摘要行应是脚本首个有效行截断加余下行数: {summary!r}")
+    running = rendered["codemode"]["running"]
+    if running["rows"] != 3 or not all(part in running["text"][2] for part in ("2 calls", "…", "write")):
+        problems.append(f"codemode 运行中应给一行嵌套调用进度: {running}")
+    failed = rendered["codemode_fail"]
+    if "3 calls" not in failed["running"]["text"][2] or "1 failed" not in failed["running"]["text"][2] or "grep" not in failed["running"]["text"][2]:
+        problems.append(f"codemode 有嵌套调用失败时进度行应点名: {failed['running']}")
+    if "✗" not in failed["final"]["text"][1] or "TypeError: rows is not iterable" not in failed["final"]["text"][2]:
+        problems.append(f"codemode 失败时应给出 ✗ 与剥掉脚本头的错误首行: {failed['final']}")
+    expanded = "\n".join(rendered["codemode_expanded"]["final"]["text"])
+    if rendered["codemode_expanded"]["final"]["rows"] <= 2 or not all(part in expanded for part in ("const rows = await tools.read", "console.log(rows.length)", "✓ read", "✓ grep", "42", '{"a":1}')):
+        problems.append(f"codemode 展开后应委托回 pi 原渲染器给出代码、嵌套调用与输出: {expanded}")
+    pages = drive("export", ["bash_expanded", "plain", "bash_fail", "codemode_expanded", "codemode_fail"])["pages"]
     if "line of output text number 30" not in pages["bash_expanded"]["expanded"] or pages["bash_expanded"]["collapsed"]:
         problems.append(f"HTML 导出应直接给出 bash 全文: {pages['bash_expanded']}")
+    if not all(part in pages["codemode_expanded"]["expanded"] for part in ("✓ grep", "42", '{"a":1}')) or pages["codemode_expanded"]["collapsed"]:
+        problems.append(f"HTML 导出应直接给出 codemode 的嵌套调用与输出全文: {pages['codemode_expanded']}")
+    if "TypeError: rows is not iterable" not in pages["codemode_fail"]["collapsed"] or "Script error:" not in pages["codemode_fail"]["expanded"]:
+        problems.append(f"HTML 导出的 codemode 失败态应给出错误首行: {pages['codemode_fail']}")
+    if len(pages["codemode_expanded"]["call"].splitlines()) != 1 or "(+2 lines)" not in pages["codemode_expanded"]["call"]:
+        problems.append(f"HTML 导出的 codemode 调用头应是单行摘要: {pages['codemode_expanded']['call']!r}")
     if not pages["plain"]["fallback"]:
         problems.append(f"HTML 导出对无渲染器的工具应回落到结构化结果: {pages['plain']}")
     if "cat: /none" not in pages["bash_fail"]["expanded"]:
