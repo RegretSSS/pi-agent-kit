@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, totalmem } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI, ToolResultEventResult } from "@earendil-works/pi-coding-agent";
@@ -45,6 +45,7 @@ const SAMPLE_OOM = 4;
 const MIN_TICK_MS = 50;
 const MAX_TICK_MS = 5000;
 const MIN_RATE_WINDOW_MS = 500;
+const SPILL_FILE = /^[\w.-]*pi-bash-[0-9a-f]{16}\.log$/;
 const WRAP_HEAD = /^exec '[^'\n]+' --user --scope --quiet --collect --unit=pi-guard-/;
 const WRAP_FAILURE = /^Failed to (?:connect to bus|start|create|launch|set|activate|lookup|add)[^\n]*\n+Command exited with code 1$/;
 const EMPTY_SAMPLE: readonly number[] = [0, 0, 0, 0, 0];
@@ -531,6 +532,7 @@ export type RunState = {
 	spinSuspect: boolean;
 	killed: KillKind | null;
 	verdict: Verdict | null;
+	spillBytes: number | null;
 	leakSlope: number | null;
 	avgCores: number;
 	lastAnon: number;
@@ -573,6 +575,7 @@ export function createRunState(options: { toolCallId: string; unit: string; orig
 		spinSuspect: false,
 		killed: null,
 		verdict: null,
+		spillBytes: null,
 		leakSlope: null,
 		avgCores: 0,
 		lastAnon: 0,
@@ -743,13 +746,29 @@ function sec(ms: number): string {
 	return `${Math.round(ms / 1000)}s`;
 }
 
+export function spillPathOf(details: unknown): string | null {
+	const path = (details as { fullOutputPath?: unknown } | null | undefined)?.fullOutputPath;
+	return typeof path === "string" && SPILL_FILE.test(basename(path)) ? path : null;
+}
+
+function dropSpill(path: string): number | null {
+	try {
+		const bytes = statSync(path).size;
+		unlinkSync(path);
+		return bytes;
+	} catch {
+		return null;
+	}
+}
+
 export function annotationFor(run: RunState, config: GuardConfig, durationMs: number, wrapFailed: boolean): string | null {
 	if (wrapFailed) return "[pi-guard] 隔离包装未能启动,已降级为仅观测模式;本条命令没有执行,请重试。";
 	const limit = gb(config.sliceMax);
 	switch (run.verdict) {
 		case "spin": {
 			const line = run.dominant ? run.dominant.topLine.slice(0, 60) : "";
-			return `[pi-guard] 已停止:空转热循环——${sec(run.spinProofMs)} 内持续重复输出同一行「${line}」(输出 ${Math.round(run.outRate / 1024)}KB/s,输入 ${Math.round(run.inRate / 1024)}KB/s),命令是无 timeout 的内联脚本。请修正循环的等待或退出条件后重跑,或给 bash 调用加 timeout 参数。`;
+			const spill = run.spillBytes === null ? "" : `它的完整输出转存件(${mb(run.spillBytes)}MB,只有这一行的重复)已删除。`;
+			return `[pi-guard] 已停止:空转热循环——${sec(run.spinProofMs)} 内持续重复输出同一行「${line}」(输出 ${Math.round(run.outRate / 1024)}KB/s,输入 ${Math.round(run.inRate / 1024)}KB/s),命令是无 timeout 的内联脚本。${spill}请修正循环的等待或退出条件后重跑,或给 bash 调用加 timeout 参数。`;
 		}
 		case "accumulate":
 			return `[pi-guard] 已停止:内存涨到硬顶 ${limit}GB(峰值 ${mb(run.peakAnon)}MB),被内核终止。合法的大内存任务请分批或流式处理;非预期增长请排查泄漏。`;
@@ -988,7 +1007,7 @@ export class Guard {
 		});
 		pi.on("tool_result", (event) => {
 			if (event.toolName !== "bash") return undefined;
-			return this.annotate(event.toolCallId, event.content, event.structuredContent, event.isError) as ToolResultEventResult | undefined;
+			return this.annotate(event.toolCallId, event.content, event.structuredContent, event.isError, event.details) as ToolResultEventResult | undefined;
 		});
 		pi.on("tool_execution_end", (event) => {
 			if (event.toolName === "bash") this.finish(event.toolCallId, event.isError, event.durationMs);
@@ -1156,7 +1175,7 @@ export class Guard {
 		entry.run.pendingText = text;
 	}
 
-	private annotate<P extends ContentPart>(toolCallId: string, content: ReadonlyArray<P>, structuredContent: unknown, isError: boolean) {
+	private annotate<P extends ContentPart>(toolCallId: string, content: ReadonlyArray<P>, structuredContent: unknown, isError: boolean, details: unknown) {
 		const entry = this.tracked.get(toolCallId);
 		if (entry === undefined) return undefined;
 		const run = entry.run;
@@ -1168,6 +1187,8 @@ export class Guard {
 			this.probeFailed();
 		}
 		finalizeRun(run, now, this.sliceOomKill(), isError, exitCodeOf(structuredContent), this.config);
+		const spill = run.verdict === "spin" ? spillPathOf(details) : null;
+		if (spill !== null) run.spillBytes = dropSpill(spill);
 		const note = annotationFor(run, this.config, durationMs, entry.wrapFailed);
 		const folded = run.verdict === "spin" && first !== undefined ? foldRepetitive(first.text ?? "", this.config) : null;
 		if (note === null && folded === null) return undefined;
