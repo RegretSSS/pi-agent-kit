@@ -133,7 +133,7 @@ install_skills() {
 main() {
 	install_agents_md
 	install_extensions
-	node scripts/patch-subagents-schedule-rpc.mjs || echo "warn: schedule-rpc patch 未应用(上游升级或未安装 pi-subagents);job_cancel/reschedule 将走 /agents 面板指引"
+	node scripts/sync-subagents-kit.mjs || echo "warn: pi-subagents 的 kit 补丁未同步(基线不匹配或 kit 仓库缺失);job/workflow 管理将走 journal 降级"
 
 	install_skills
 	if [[ -f "${HOME}/.claude.json" ]]; then

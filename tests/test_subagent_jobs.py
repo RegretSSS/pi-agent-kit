@@ -1,11 +1,9 @@
 import json
-import os
 import subprocess
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 DRIVER = REPO / "tests" / "subagent_jobs_driver.mjs"
-PATCH = REPO / "scripts" / "patch-subagents-schedule-rpc.mjs"
 
 JOB = {
     "id": "W6E5_nfAyQ",
@@ -108,104 +106,6 @@ def test_validate_patch_whitelist_and_formats() -> None:
 
 def test_store_path_layout() -> None:
     assert drive("path", {"cwd": "/w", "sessionId": "s"})["path"] == "/w/.pi/subagent-schedules/s.json"
-
-
-def make_fake_upstream(home: Path) -> None:
-    src_dir = home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/src"
-    src_dir.mkdir(parents=True)
-    (src_dir / "cross-extension-rpc.ts").write_text(
-        'import type { AgentRecord } from "./types.js";\n'
-        "export interface RpcDeps {\n"
-        "  events: EventBus;\n"
-        "  pi: unknown;\n"
-        "  getCtx: () => unknown | undefined;\n"
-        "  manager: SpawnCapable;\n"
-        "}\n"
-        '  const unsubPing = handleRpc(events, "subagents:rpc:ping", () => {\n'
-        "    return { version: PROTOCOL_VERSION };\n"
-        "  });\n"
-        "  const unsubSpawn = handleRpc<{ requestId: string; type: string; prompt: string; options?: any }>(\n",
-        encoding="utf8",
-    )
-    desc_dir = src_dir / "workflow"
-    desc_dir.mkdir(parents=True)
-    (desc_dir / "tool-description.ts").write_text(
-        "export const fullWorkflowToolDescription = `placeholder`;\n"
-        "stamp results after the workflow returns, or pass timestamps via args.`;\n",
-        encoding="utf8",
-    )
-    (src_dir / "index.ts").write_text(
-        'import { fullWorkflowToolDescription } from "./workflow/tool-description.js";\n'
-        "      rpcHandle = registerRpcHandlers({\n"
-        "        events: pi.events,\n"
-        "        pi,\n"
-        "        getCtx: () => currentCtx,\n"
-        "description: renderToolDescriptionTemplate(fullWorkflowToolDescription),\n",
-        encoding="utf8",
-    )
-
-
-def run_patch(home: Path, tmp: Path | None = None) -> subprocess.CompletedProcess:
-    env = dict(os.environ, HOME=str(home))
-    if tmp is not None:
-        env["TMPDIR"] = str(tmp)
-    return subprocess.run(["node", str(PATCH)], capture_output=True, text=True, env=env, cwd=REPO)
-
-
-def test_patch_script_idempotent_and_anchored(tmp_path) -> None:
-    home = tmp_path
-    tmp = tmp_path / "tmpdir"
-    jiti = tmp / "jiti" / "nested"
-    jiti.mkdir(parents=True)
-    (jiti / "stale.mjs").write_text("old cache", encoding="utf8")
-    make_fake_upstream(home)
-    first = run_patch(home, tmp)
-    assert first.returncode == 0, first.stderr
-    assert first.stdout.count("注入完成") == 10
-    rpc_text = (home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/src/cross-extension-rpc.ts").read_text()
-    assert "subagents:rpc:schedule_list" in rpc_text
-    assert "requireScheduler" in rpc_text
-    assert "getScheduler?: () => unknown;" in rpc_text
-    assert "getWorkflowTasks?: () => unknown;" in rpc_text
-    assert "subagents:rpc:workflow_list" in rpc_text
-    assert "subagents:rpc:workflow_stop" in rpc_text
-    assert "subagents:rpc:workflow_pause" in rpc_text
-    assert "subagents:rpc:workflow_resume" in rpc_text
-    assert "subagents:rpc:workflow_status" in rpc_text
-    assert "pauseWorkflowTask" in rpc_text
-    assert 'from "./workflow/progress.js"' in rpc_text
-    assert 'from "./workflow/task.js"' in rpc_text
-    index_text = (home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/src/index.ts").read_text()
-    assert "getScheduler: () => scheduler," in index_text
-    assert "getWorkflowTasks: () => workflowTasks," in index_text
-    rpc_text2 = (home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/src/workflow/tool-description.ts").read_text()
-    assert "slimWorkflowToolDescription" in rpc_text2
-    assert "read the skill 'subagent-workflows'" in rpc_text2
-    assert "renderToolDescriptionTemplate(slimWorkflowToolDescription)," in index_text
-    assert "import { fullWorkflowToolDescription, slimWorkflowToolDescription }" in index_text
-    assert not (tmp / "jiti").exists()
-    second = run_patch(home, tmp)
-    assert second.returncode == 0
-    assert second.stdout.count("已打过") == 10
-    assert "已清理 jiti" in second.stdout
-
-
-def test_patch_script_fails_cleanly_on_anchor_miss(tmp_path) -> None:
-    home = tmp_path
-    src_dir = home / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/src"
-    src_dir.mkdir(parents=True)
-    (src_dir / "cross-extension-rpc.ts").write_text("upgraded beyond recognition", encoding="utf8")
-    desc_dir = src_dir / "workflow"
-    desc_dir.mkdir(parents=True)
-    (desc_dir / "tool-description.ts").write_text(
-        "export const fullWorkflowToolDescription = `placeholder`;\n"
-        "stamp results after the workflow returns, or pass timestamps via args.`;\n",
-        encoding="utf8",
-    )
-    (src_dir / "index.ts").write_text("anything", encoding="utf8")
-    result = run_patch(home, tmp_path)
-    assert result.returncode == 1
-    assert "锚点未命中" in result.stdout + result.stderr
 
 
 def test_workflow_run_formatting() -> None:
