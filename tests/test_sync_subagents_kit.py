@@ -32,7 +32,8 @@ def make_package(root: Path, version: str = "0.23.2", stale: bool = True) -> Pat
 
 
 def run(package: Path, kit: Path, tmp: Path) -> subprocess.CompletedProcess:
-    env = dict(os.environ, PI_SUBAGENTS_PKG=str(package), PI_SUBAGENTS_KIT=str(kit), TMPDIR=str(tmp))
+    env = {key: value for key, value in os.environ.items() if key != "PI_SUBAGENTS_KIT_BRANCH"}
+    env.update(PI_SUBAGENTS_PKG=str(package), PI_SUBAGENTS_KIT=str(kit), TMPDIR=str(tmp))
     return subprocess.run(["node", str(SCRIPT)], capture_output=True, text=True, env=env, cwd=REPO)
 
 

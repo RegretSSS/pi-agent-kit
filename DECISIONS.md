@@ -242,3 +242,10 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D27-7 踩坑**:①lint 找 pi 必须带 `~/.local/bin/pi` 兜底——本机 `pi` 不在 PATH,只靠 `which` 会直接 skip 且 exit 0,gate 照样绿(静默失效);②Node strip-only 模式不支持 TS 参数属性(`constructor(private x)`),须显式字段;③`ToolRenderContext` 不从包根导出,用 `Parameters<NonNullable<ToolRenderers["renderCall"]>>[2]` 推导;pi-tui 的 `Component` 要求 `invalidate()` 必有;④driver 剥 ANSI 只能剥 SGR 颜色码——连 OSC 一起剥会掩盖注入,断言「行内不得残留 ESC/C0」就落空;⑤`fs/promises.readFile` 不收数字 fd,读 stdin 用同步 `readFileSync(0, "utf8")`。
 - **D27-8 没做的**:相邻调用合并成一行(`pi-minimal-toolcall` 的做法:同一组里前面的调用画 0 行、最后一条画汇总行,纯扩展可行,留二期——逐条可见便于回看模型做了什么);行内计时 spinner(pi 自带 working indicator)。
 - **D27-9 部署**:单文件 `cp extensions/quiet-tui.ts ~/.pi/agent/extensions/`;不改 schema,不需要空档。在跑的会话 reload 才换(不替用户重启),新会话自动加载;回退 = 删文件 + reload。
+
+## D28(a2a-inbox.ts 移出本仓:归 a2a-mailbox hub 仓管,2026-11-28 夜,用户「你做到你认为最好就行」)
+
+- **D28-1 问题**:`extensions/a2a-inbox.ts` 在仓里有一份,部署位那份却由 node-2 维护并于 2026-11-28 17:55 更新(带子代理会话判别 `isSubagentSessionName`),两边各缺对方一个改动。`deploy.sh` 无条件安装 `extensions/*.ts`,谁跑一次完整部署就会拿仓里的旧版覆盖 node-2 的新版——子代理会话会被装上来函 resolver,11-27 那种「来函进判官会话」的事故会回来。这条隐患此前只能靠纪律(「绝不跑完整 deploy.sh」)守。
+- **D28-2 决定**:仓里不再保存、不再部署、不再测试这个文件,唯一真相源是 node-2 的 hub 仓(`~/workspace/a2a-mailbox`,本机只读)。随文件一起删除的还有只为它存在的三个 lint、一个 driver 与 7 条单测:它们守护的是仓内那套带 `wakeLanded` 落地检测的实现(含 11-18 事故后的 `inj-` claim 幂等化)。对比过 hub 源与部署位:两边都没有那套落地检测与重注机制,而 11-18 的 36 连注事故根因正是「检测不到即重注」——所以没有需要移交的修复;已去函 node-2(103d7cbeb526),它若要跨进程单注入者保护,再把那段整理过去。
+- **D28-3 守卫**:`lints/foreign_owned_extensions_absent.py`——「归外部所有」的扩展文件不得出现在 `extensions/`,清单写在 lint 里(现只有 `a2a-inbox.ts`),自动被 run-lints.sh 发现;反向验证:往 `extensions/` 放一个同名空文件即红。
+- **D28-4 顺带修的测试泄漏**:`tests/test_sync_subagents_kit.py` 的 `run()` 继承了调用方环境里的 `PI_SUBAGENTS_KIT_BRANCH`,带着它跑 gate 时同步脚本的单测会去临时仓库里找一个不存在的分支。现在该测试不再继承这个变量。这是在 pi 1.7.0 上跑 gate 时暴露的假红。

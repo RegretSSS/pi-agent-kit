@@ -47,7 +47,7 @@ git clone https://github.com/RegretSSS/pi-agent-kit ~/.pi-agent-kit
 
 ```
 agents-md/    AGENTS.md 管理节版本化真相
-extensions/   pi 扩展(memory / tasks(含 bg_* 统一管理面)/ compact-tool / a2a-inbox / context-gauge / pi-guard)
+extensions/   pi 扩展(memory / tasks(含 bg_* 统一管理面)/ compact-tool / context-gauge / pi-guard)
 lints/        机械规则(一规则一文件,run-lints.sh 自动发现)
 scripts/      run-lints / enable-gate / sync-mcp / quick-install
 skills/       subagent-workflows 编排引导

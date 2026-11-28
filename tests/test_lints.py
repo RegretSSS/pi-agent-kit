@@ -138,3 +138,16 @@ def test_run_lints_green(tmp_path) -> None:
         env=env,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_foreign_owned_extension_absent_from_repo():
+    lint = load("foreign_owned_extensions_absent")
+    assert lint.find_foreign_owned(REPO / "extensions") == []
+
+
+def test_foreign_owned_extension_copy_is_flagged(tmp_path) -> None:
+    lint = load("foreign_owned_extensions_absent")
+    (tmp_path / "a2a-inbox.ts").write_text("export default function () {}\n")
+    problems = lint.find_foreign_owned(tmp_path)
+    assert len(problems) == 1
+    assert problems[0].startswith("a2a-inbox.ts 归 ")

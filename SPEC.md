@@ -96,6 +96,7 @@
 
 - desktop：`extensions/*.ts` → `~/.pi/agent/extensions/`；MCP 同步实跑；AGENTS.md 落位
 - `deploy.sh` 一键部署 desktop（幂等；laptop 已停用不涉及）
+- `a2a-inbox.ts` 不归本仓（归 a2a-mailbox hub 仓，node-2 维护）：仓内不保存、不部署，`lints/foreign_owned_extensions_absent.py` 守着（D28）
 
 ## 开发铁律（沿用）
 
