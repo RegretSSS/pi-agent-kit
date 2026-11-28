@@ -1237,7 +1237,7 @@ async function journalFallbackStatus(key: string, ctx: SessionContext, lines: nu
 				if (!agent) return access.state === "absent" ? textResult(NO_SUBAGENTS, { found: false }, true) : access.state === "unavailable" ? textResult(SECTION_UNAVAILABLE, { found: false }, true) : missingResult("agent", target.key);
 				const lines = [agentRow(agent)];
 				if (agent.error !== undefined) lines.push(`error: ${headText(agent.error, ERROR_HEAD_CHARS)}`);
-				if (agent.result !== undefined) lines.push(`result(尾 ${RESULT_TAIL_CHARS} 字): ${parseLogTail(agent.result, RESULT_TAIL_CHARS)}`);
+				if (agent.result) lines.push(`result(尾 ${RESULT_TAIL_CHARS} 字): ${parseLogTail(agent.result, RESULT_TAIL_CHARS)}`);
 				if (waitedMs > 0) lines.push(`waited=${Math.round(waitedMs / 1000)}s`);
 				return textResult(lines.join("\n"), { status: agent.status, waitedMs });
 			}

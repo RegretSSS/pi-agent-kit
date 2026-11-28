@@ -15,6 +15,10 @@ PROVIDER = "bgtoolssim"
 FINAL_TEXT = "BG_TOOLS_PROBE_DONE"
 CHILD_MARKER = "BG_TOOLS_CHILD_MARKER"
 CHILD_DONE = "BG_CHILD_DONE"
+CHILD_OK = "bg probe child"
+CHILD_FAILED = "bg fail child"
+FAIL_MARKER = "BG_TOOLS_FAIL_CHILD"
+FAILURE_TEXT = "bg tools boom"
 TASK_MARK = "BG_TASK_MARK"
 KIT_LABEL = "(kit 分支)"
 
@@ -82,9 +86,13 @@ def user_text(request: dict) -> str:
     return " ".join(str(message.get("content")) for message in request.get("messages") or [] if message.get("role") == "user")
 
 
-
 def tool_results(request: dict) -> list[str]:
     return [str(message.get("content")) for message in request.get("messages") or [] if message.get("role") == "tool"]
+
+
+def agent_id(listing: str, description: str) -> str | None:
+    found = re.search(rf"^agent:([0-9A-Za-z-]+)[^\n]*\| {re.escape(description)}\s*$", listing, re.MULTILINE)
+    return found.group(1) if found else None
 
 
 def next_call(request: dict) -> tuple[str, dict] | None:
@@ -93,25 +101,26 @@ def next_call(request: dict) -> tuple[str, dict] | None:
     if answered == 0:
         return "task_create", {"cmd": f"sleep 4; echo {TASK_MARK}; exit 5", "name": "bg-e2e"}
     if answered == 1:
-        return "Agent", {"prompt": f"{CHILD_MARKER}: run the bash command `sleep 2`, then reply with exactly {CHILD_DONE}", "description": "bg probe child", "subagent_type": "general-purpose"}
+        return "Agent", {"prompt": f"{CHILD_MARKER}: run the bash command `sleep 2`, then reply with exactly {CHILD_DONE}", "description": CHILD_OK, "subagent_type": "general-purpose"}
     if answered == 2:
-        return "bg_list", {}
+        return "Agent", {"prompt": f"{FAIL_MARKER}: report done", "description": CHILD_FAILED, "subagent_type": "general-purpose"}
     if answered == 3:
-        agent = re.search(r"agent:([0-9A-Za-z-]+)", results[2])
-        return "bg_status", {"handle": f"agent:{agent.group(1)}", "wait": 30} if agent else None
+        return "bg_list", {}
+    child, failed = agent_id(results[3], CHILD_OK), agent_id(results[3], CHILD_FAILED)
+    task = re.search(r"task:(\d{14}-\d+-[a-z0-9]+)", results[3])
     if answered == 4:
-        agent = re.search(r"agent:([0-9A-Za-z-]+)", results[2])
-        return "bg_log", {"handle": f"agent:{agent.group(1)}"} if agent else None
+        return ("bg_status", {"handle": f"agent:{child}", "wait": 30}) if child else None
     if answered == 5:
-        task = re.search(r"task:(\d{14}-\d+-[a-z0-9]+)", results[2])
-        return "bg_status", {"handle": f"task:{task.group(1)}", "wait": 30} if task else None
+        return ("bg_log", {"handle": f"agent:{child}"}) if child else None
     if answered == 6:
-        task = re.search(r"task:(\d{14}-\d+-[a-z0-9]+)", results[2])
-        return "bg_log", {"handle": f"task:{task.group(1)}"} if task else None
+        return ("bg_status", {"handle": f"agent:{failed}", "wait": 30}) if failed else None
     if answered == 7:
-        task = re.search(r"task:(\d{14}-\d+-[a-z0-9]+)", results[2])
-        return "bg_stop", {"handle": f"task:{task.group(1)}"} if task else None
+        return ("bg_status", {"handle": f"task:{task.group(1)}", "wait": 30}) if task else None
     if answered == 8:
+        return ("bg_log", {"handle": f"task:{task.group(1)}"}) if task else None
+    if answered == 9:
+        return ("bg_stop", {"handle": f"task:{task.group(1)}"}) if task else None
+    if answered == 10:
         return "bg_schedule", {"action": "list"}
     return None
 
@@ -120,8 +129,8 @@ class ScriptedModel(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def send_body(self, body: bytes, content_type: str):
-        self.send_response(200)
+    def send_body(self, body: bytes, content_type: str, status: int = 200):
+        self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -137,6 +146,9 @@ class ScriptedModel(BaseHTTPRequestHandler):
             self.server.requests.append(request)
             index = len(self.server.requests)
         prompt = user_text(request)
+        if FAIL_MARKER in prompt:
+            self.send_body(json.dumps({"error": {"message": FAILURE_TEXT, "type": "server_error"}}).encode(), "application/json", 500)
+            return
         if CHILD_MARKER in prompt:
             call = ("bash", {"command": "sleep 2"}) if not tool_results(request) else None
         else:
@@ -170,6 +182,7 @@ def run_session(pi: str, package_root: Path, subagents: Path, server: ThreadingH
     (agent_dir / "models.json").write_text(
         json.dumps({"providers": {PROVIDER: {"baseUrl": f"http://127.0.0.1:{server.server_address[1]}/v1", "api": "openai-completions", "apiKey": "scripted", "models": [{"id": "scripted"}]}}})
     )
+    (agent_dir / "settings.json").write_text(json.dumps({"retry": {"enabled": False}}))
     result = subprocess.run(
         [
             pi, "--provider", PROVIDER, "--model", "scripted", "--offline", "--no-extensions", "-e", str(subagents), "-e", str(ext_dir / "tasks.ts"),
@@ -204,13 +217,13 @@ def lint(pi: str, package_root: Path, subagents: Path, source: str) -> list[str]
         server.server_close()
     if re.search(r"(extension|tasks|subagents)[^\n]*(error|failed)", stderr, re.IGNORECASE):
         problems.append(f"真实会话里扩展报错: {stderr.strip()[-400:]}")
-    parents = [request for request in server.requests if CHILD_MARKER not in user_text(request)]
+    parents = [request for request in server.requests if CHILD_MARKER not in user_text(request) and FAIL_MARKER not in user_text(request)]
     if not parents:
         return problems + ["脚本化会话没有留下父会话请求"]
     results = tool_results(parents[-1])
-    if len(results) != 9:
-        return problems + [f"脚本化会话应走完 9 次工具调用,实际 {len(results)} 次: {json.dumps(parents[-1].get('messages'), ensure_ascii=False)[-600:]}"]
-    listing, agent_status, agent_log, task_status, task_log, stopped, jobs = results[2:9]
+    if len(results) != 11:
+        return problems + [f"脚本化会话应走完 11 次工具调用,实际 {len(results)} 次: {json.dumps(parents[-1].get('messages'), ensure_ascii=False)[-600:]}"]
+    listing, agent_status, agent_log, failed_status, task_status, task_log, stopped, jobs = results[3:11]
     if "[task]" not in listing or "[agent]" not in listing or "task:" not in listing or "agent:" not in listing:
         problems.append(f"bg_list 没有同时列出命令任务与子代理: {listing[:300]}")
     if "completed" not in agent_status:
@@ -231,6 +244,8 @@ def lint(pi: str, package_root: Path, subagents: Path, source: str) -> list[str]
         return problems
     if "result(尾" not in agent_status or CHILD_DONE not in agent_status:
         problems.append(f"bg_status(agent) 应给出子代理结论的尾部: {agent_status[:300]}")
+    if "| error |" not in failed_status or "error:" not in failed_status or FAILURE_TEXT not in failed_status or "result(" in failed_status:
+        problems.append(f"bg_status(失败的子代理) 应给出失败原因且不给空的 result 行: {failed_status[:300]}")
     return problems
 
 

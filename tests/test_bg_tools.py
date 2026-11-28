@@ -221,6 +221,13 @@ def test_bg_status_waits_for_agent_terminal(tmp_path) -> None:
     assert "error: model timeout after 3 retries" in failed["text"] and "result(" not in failed["text"]
 
 
+def test_bg_status_failed_agent_with_empty_result_prints_no_result_line(tmp_path) -> None:
+    failed_with_empty_result = {**AGENT_ERROR, "result": ""}
+    failed = tools({"upstream": {"list": {"agents": [failed_with_empty_result]}}, "calls": [{"tool": "bg_status", "params": {"handle": "agent:agent-err1"}}]}, tmp_path)[0]
+    assert "error: model timeout after 3 retries" in failed["text"] and "result(" not in failed["text"]
+    assert failed["details"]["status"] == "error"
+
+
 def test_bg_status_workflow_rpc_and_journal_fallback(tmp_path) -> None:
     detail = tools({"upstream": {"workflow_status": STATUS_DETAIL, "workflow_list": {"runs": []}}, "calls": [{"tool": "bg_status", "params": {"handle": "wf:wf_abc123def456"}}]}, tmp_path)[0]
     assert "[error] | rpc timeout" in detail["text"] and detail["details"]["waitedMs"] == 0
