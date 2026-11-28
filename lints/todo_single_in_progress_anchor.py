@@ -26,15 +26,17 @@ def main() -> int:
         violations.append("session_start/session_tree 未双挂 rebuild——branch/恢复后清单状态不回放,分支感知设计落空")
     if "appendEntry" not in source or "TODO_STATE_ENTRY" not in source:
         violations.append("状态变更未走 appendEntry(todo-state) 持久化——jsonl 的 toolResult 不落盘 details(实测七键无 details),不落 custom entry 则重启即失忆(D21 审查定谳:文本协议是膏药根因)")
-    commit_block = re.search(r"const commit = \(action.{0,500}?\n\t+\};", source, re.DOTALL)
+    commit_block = re.search(r"const commit = \(action.{0,900}?\n\t+\};", source, re.DOTALL)
     if not commit_block:
         violations.append("缺 commit 集中提交点——appendEntry 应统一在变更出口,散落各分支必有遗漏(clear 空态尤其要落,否则重启复活)")
     else:
         changes = re.findall(r'return commit\(', source)
         if len(changes) < 4:
             violations.append(f"变更动作(add/status/toggle/clear)只有 {len(changes)} 个走 commit——全部四动作必须落盘")
-    if "settleDone" not in source or "DONE_KEEP" not in source:
-        violations.append("缺 done 沉降(DONE_KEEP/settleDone)——已完条目无界累积会冲爆上下文(每次工具 content 全量渲染)")
+    if "settle(" not in source or "DONE_KEEP" not in source:
+        violations.append("缺 done 沉降(DONE_KEEP/settle)——已完条目无界累积会冲爆上下文(每次工具 content 全量渲染)")
+    if "PENDING_KEEP" not in source or "settledPending" not in source:
+        violations.append("缺 pending 沉降(PENDING_KEEP/settledPending)——挂账只靠模型主动 archive 等于永不沉降(aicontest 会话 392 次 add 对 2 次 archive,11-24 起 pending 堆到 300+)")
     if "nextId" not in source:
         violations.append("缺 nextId 传递——重建后新增条目会撞 id")
     if re.search(r"parseTodos|contentText", source):

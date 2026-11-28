@@ -1,17 +1,20 @@
+import { readFileSync } from "node:fs";
 import { register } from "node:module";
 register(new URL("./typebox_shim.mjs", import.meta.url));
-const { default: factory, markStatus, reconstructTodos, formatTodos } = await import("../extensions/todo.ts");
+const { default: factory, markStatus, reconstructTodos, formatTodos, settle } = await import("../extensions/todo.ts");
 
 const [scenario, payloadRaw] = process.argv.slice(2);
-const payload = payloadRaw ? JSON.parse(payloadRaw) : {};
+const payload = payloadRaw === "-" ? JSON.parse(readFileSync(0, "utf8")) : payloadRaw ? JSON.parse(payloadRaw) : {};
 const out = {};
 
-if (scenario === "mark-status") {
+if (scenario === "settle") {
+	out.settled = settle(payload.todos ?? []);
+} else if (scenario === "mark-status") {
 	out.todos = markStatus(payload.todos, payload.id, payload.status);
 } else if (scenario === "reconstruct") {
 	out.state = reconstructTodos(payload.branch ?? []);
 } else if (scenario === "format") {
-	out.text = formatTodos(payload.todos ?? [], typeof payload.cap === "number" ? payload.cap : undefined);
+	out.text = formatTodos(payload.todos ?? [], typeof payload.cap === "number" ? payload.cap : undefined, typeof payload.settledDone === "number" ? payload.settledDone : undefined);
 } else if (scenario === "session") {
 	const handlers = {};
 	const tools = {};
@@ -46,7 +49,9 @@ if (scenario === "mark-status") {
 			text: result.content[0].text,
 			error: result.details.error ?? null,
 			done: result.details.done,
+			open: result.details.open,
 			total: result.details.total,
+			settled: result.details.settled,
 			activeId: result.details.activeId ?? null,
 		});
 	}

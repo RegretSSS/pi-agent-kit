@@ -2,18 +2,23 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 export type TodoStatus = "pending" | "in_progress" | "done";
 export type TodoItem = { id: number; text: string; status: TodoStatus; doneAt?: number };
-export type TodoState = { todos: TodoItem[]; nextId: number };
-export type TodoDetails = { action: string; error?: string; done: number; total: number; activeId?: number; nextId: number };
+export type TodoState = { todos: TodoItem[]; nextId: number; settledDone?: number; settledPending?: number };
+export type TodoDetails = { action: string; error?: string; done: number; open: number; total: number; activeId?: number; nextId: number; settled: number };
 export type TodoParams = { action: string; text?: string; id?: number; status?: TodoStatus };
 
 export const TODO_STATE_ENTRY = "todo-state";
 export const DONE_KEEP = 3;
+export const PENDING_KEEP = 40;
 export const TODO_LIST_KEEP = 40;
+export const ROW_CHARS = 120;
 
-export function settleDone(todos: TodoItem[]): TodoItem[] {
+export function settle(todos: TodoItem[]): { todos: TodoItem[]; done: number; pending: number } {
 	const done = todos.filter((t) => t.status === "done").sort((a, b) => (a.doneAt ?? 0) - (b.doneAt ?? 0));
-	const drop = new Set(done.slice(0, Math.max(0, done.length - DONE_KEEP)).map((t) => t.id));
-	return todos.filter((t) => !drop.has(t.id));
+	const pending = todos.filter((t) => t.status === "pending");
+	const staleDone = done.slice(0, -DONE_KEEP);
+	const stalePending = pending.slice(0, -PENDING_KEEP);
+	const dropped = new Set([...staleDone, ...stalePending].map((t) => t.id));
+	return { todos: todos.filter((t) => !dropped.has(t.id)), done: staleDone.length, pending: stalePending.length };
 }
 
 export function markStatus(todos: TodoItem[], id: number, status: TodoStatus): TodoItem[] {
@@ -30,25 +35,31 @@ export function reconstructTodos(branch: { type: string; customType?: string; da
 	for (const entry of branch) {
 		if (entry.type !== "custom" || entry.customType !== TODO_STATE_ENTRY) continue;
 		const data = entry.data as TodoState | undefined;
-		if (data && Array.isArray(data.todos)) state = { todos: data.todos, nextId: data.nextId };
+		if (data && Array.isArray(data.todos)) state = { todos: data.todos, nextId: data.nextId, settledDone: data.settledDone ?? 0, settledPending: data.settledPending ?? 0 };
 	}
 	return state;
 }
 
-export function formatTodos(todos: TodoItem[], cap: number = TODO_LIST_KEEP): string {
+function rowText(text: string): string {
+	const flat = text.replace(/\s+/g, " ").trim();
+	const points = Array.from(flat);
+	return points.length > ROW_CHARS ? `${points.slice(0, ROW_CHARS - 1).join("")}…` : flat;
+}
+
+export function formatTodos(todos: TodoItem[], cap: number = TODO_LIST_KEEP, settledDone = 0): string {
 	if (todos.length === 0) return "无条目";
-	const done = todos.filter((t) => t.status === "done").length;
-	const head = `${done}/${todos.length} 完成`;
+	const done = todos.filter((t) => t.status === "done").length + settledDone;
+	const open = todos.filter((t) => t.status !== "done").length;
 	const priority = todos.filter((t) => t.status !== "pending");
 	const pending = todos.filter((t) => t.status === "pending");
 	const shown = [...priority, ...pending].slice(0, cap);
 	const rows = shown.map((t) => {
 		const mark = t.status === "done" ? "x" : t.status === "in_progress" ? ">" : " ";
-		return `[${mark}] #${t.id}: ${t.text}`;
+		return `[${mark}] #${t.id}: ${rowText(t.text)}`;
 	});
 	const hidden = todos.length - shown.length;
 	const tail = hidden > 0 ? [`…另有 ${hidden} 条未显示: todo full 看全量 / todo archive 清挂账`] : [];
-	return [head, ...rows, ...tail].join("\n");
+	return [`已完成 ${done} · 未完成 ${open}`, ...rows, ...tail].join("\n");
 }
 
 export default async function (pi: ExtensionAPI) {
@@ -57,21 +68,27 @@ export default async function (pi: ExtensionAPI) {
 	const { Text } = await import("@earendil-works/pi-tui");
 	let todos: TodoItem[] = [];
 	let nextId = 1;
+	let settledDone = 0;
+	let settledPending = 0;
 
 	const rebuild = (ctx: ExtensionContext) => {
 		const state = reconstructTodos(ctx.sessionManager.getBranch() as never);
 		todos = state.todos;
 		nextId = state.nextId;
+		settledDone = state.settledDone ?? 0;
+		settledPending = state.settledPending ?? 0;
 	};
 
 	const summarize = (action: string, error?: string): TodoDetails => {
 		const active = todos.find((t) => t.status === "in_progress");
 		const details: TodoDetails = {
 			action,
-			done: todos.filter((t) => t.status === "done").length,
+			done: todos.filter((t) => t.status === "done").length + settledDone,
+			open: todos.filter((t) => t.status !== "done").length,
 			total: todos.length,
 			activeId: active?.id,
 			nextId,
+			settled: settledPending,
 		};
 		if (error) details.error = error;
 		return details;
@@ -83,9 +100,12 @@ export default async function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "todo",
 		label: "Todo",
-		description: "计划步骤清单(状态经 custom entry 持久化,重启/branch/compact 后自动回放)。多步任务动手前先建单;开工一步前把它标 in_progress(同时刻仅一个,设置新的会自动把旧的退回 pending);完成即 done。已完条目只保留最近 3 条,更早的自动沉降;list 默认最多 40 行(非 pending 优先,超出提示 todo full/archive);挂账候裁的 pending 批量用 archive 清出活动视图——沉降与归档的全史都在本会话 jsonl 的 todo-state 条目里,跨会话历史在 ~/.pi/agent/sessions/ 下 grep todo-state 可回。行动: list / full / add(text) / status(id,status) / toggle(id) / archive([id]) / clear。",
-		promptSnippet: "计划步骤清单",
-		promptGuidelines: ["Break multi-step work into todo items before starting; keep exactly one item in_progress while executing; mark done immediately after completion; archive parked pending batches instead of letting them pile up."],
+		description: "计划待办清单。每条是一个能被标 done 的具体动作——不是日志、交接摘要或状态快照(那些写进文件或 memory)。多步任务动手前建单;开工一步前标 in_progress(同时刻仅一个,设置新的会自动把旧的退回 pending);完成即 done。活动清单自动保持干净:done 只留最近 3 条,pending 只留最近 40 条,更旧的自动沉降(全史在本会话 jsonl 的 todo-state 条目里);list 默认最多 40 行;挂账候裁的 pending 批量用 archive 清出。行动: list / full / add(text) / status(id,status) / toggle(id) / archive([id]) / clear。",
+		promptSnippet: "计划待办清单",
+		promptGuidelines: [
+			"Break multi-step work into todo items before starting; keep exactly one item in_progress while executing; mark done immediately after completion; archive parked pending batches instead of letting them pile up.",
+			"Never use todo items as journal entries, handoff notes or status snapshots: an item that can never be marked done does not belong here.",
+		],
 		parameters: Type.Object({
 			action: StringEnum(["list", "full", "add", "status", "toggle", "archive", "clear"] as const),
 			text: Type.Optional(Type.String({ description: "add 的条目文本" })),
@@ -99,24 +119,28 @@ export default async function (pi: ExtensionAPI) {
 				details: summarize(params.action, error),
 			});
 			const commit = (action: string, message: string): { content: { type: "text"; text: string }[]; details: TodoDetails } => {
-				todos = settleDone(todos);
+				const settled = settle(todos);
+				todos = settled.todos;
+				settledDone += settled.done;
+				settledPending += settled.pending;
 				try {
-					pi.appendEntry(TODO_STATE_ENTRY, { todos, nextId });
+					pi.appendEntry(TODO_STATE_ENTRY, { todos, nextId, settledDone, settledPending });
 				} catch (error) {
 					return fail(`状态落盘失败: ${error instanceof Error ? error.message : String(error)}`);
 				}
-				return { content: [{ type: "text", text: message }], details: summarize(action) };
+				const note = settled.pending > 0 ? `;最旧的 ${settled.pending} 条 pending 已沉降(活动清单只留最近 ${PENDING_KEEP} 条)` : "";
+				return { content: [{ type: "text", text: `${message}${note}` }], details: summarize(action) };
 			};
 			switch (params.action) {
 				case "list":
-					return { content: [{ type: "text", text: formatTodos(todos) }], details: summarize("list") };
+					return { content: [{ type: "text", text: formatTodos(todos, TODO_LIST_KEEP, settledDone) }], details: summarize("list") };
 				case "full":
-					return { content: [{ type: "text", text: formatTodos(todos, Number.POSITIVE_INFINITY) }], details: summarize("full") };
+					return { content: [{ type: "text", text: formatTodos(todos, Number.POSITIVE_INFINITY, settledDone) }], details: summarize("full") };
 				case "add": {
 					if (!params.text) return fail("add 需要 text");
 					const item: TodoItem = { id: nextId++, text: params.text, status: "pending" };
 					todos = [...todos, item];
-					return commit("add", `已加 #${item.id}: ${item.text}`);
+					return commit("add", `已加 #${item.id}: ${rowText(item.text)}`);
 				}
 				case "status": {
 					if (params.id === undefined || !params.status) return fail("status 需要 id 与 status");
@@ -149,6 +173,8 @@ export default async function (pi: ExtensionAPI) {
 					const count = todos.length;
 					todos = [];
 					nextId = 1;
+					settledDone = 0;
+					settledPending = 0;
 					return commit("clear", `已清空 ${count} 条`);
 				}
 			}
@@ -157,14 +183,14 @@ export default async function (pi: ExtensionAPI) {
 		renderCall(rawArgs, theme) {
 			const args = rawArgs as TodoParams;
 			let text = theme.fg("toolTitle", theme.bold("todo ")) + theme.fg("muted", args.action);
-			if (args.text) text += ` ${theme.fg("dim", `"${args.text}"`)}`;
+			if (args.text) text += ` ${theme.fg("dim", `"${rowText(args.text)}"`)}`;
 			if (args.id !== undefined) text += ` ${theme.fg("accent", `#${args.id}`)}`;
 			return new Text(text, 0, 0);
 		},
 		renderResult(result, _options, theme) {
 			const details = result.details as TodoDetails | undefined;
 			if (details?.error) return new Text(theme.fg("error", `Error: ${details.error}`), 0, 0);
-			const summary = `${details?.done ?? 0}/${details?.total ?? 0} 完成` + (details?.activeId !== undefined ? ` · 进行中 #${details.activeId}` : "");
+			const summary = `已完成 ${details?.done ?? 0} · 未完成 ${details?.open ?? details?.total ?? 0}` + (details?.activeId !== undefined ? ` · 进行中 #${details.activeId}` : "");
 			return new Text(theme.fg("muted", summary), 0, 0);
 		},
 	});
@@ -172,7 +198,7 @@ export default async function (pi: ExtensionAPI) {
 	pi.registerCommand("todos", {
 		description: "显示当前分支的计划步骤清单",
 		handler: async (_args, ctx) => {
-			ctx.ui.notify(formatTodos(todos), "info");
+			ctx.ui.notify(formatTodos(todos, TODO_LIST_KEEP, settledDone), "info");
 		},
 	});
 }

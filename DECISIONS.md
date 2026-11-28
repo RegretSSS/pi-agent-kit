@@ -296,3 +296,13 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D33-4 没做的**:①转存上限(只留头尾若干 MB)在 `OutputAccumulator` 里,是 pi 上游的事;扩展层只能 monkey-patch 内部模块,不做,建议向上游提。②会话结束时清掉本会话的全部转存件——改变上游语义(TUI 里的 `Full output: …` 路径失效、事后看不了全文)、被杀的会话清不了、也超出 pi-guard「失控防护」的职责;前两项做完后日常遗留的量级可控(只有超过 50KB 的输出才转存),不做。③热循环判定窗口(默认 60s)内已写入的转存:被停即删,瞬时占用取决于输出率,不另限速。
 - **D33-5 踩坑**:断言「临时目录为空」太宽——pi 把 jiti 编译缓存也放在 `tmpdir()/jiti`,只看 `pi-*.log`;规则只按「含触发词」判定会误伤只读驱动源码的 lint,要加「且调用 subprocess」。
 - **D33-6 部署**:`cp extensions/pi-guard.ts ~/.pi/agent/extensions/`;不改 schema;在跑的会话 reload 才换,新会话自动生效。
+
+## D34(todo 清单堆到 244 条未完成、完成数永远是 3,2026-11-29,用户「todo的管理好像还是有问题…好像完成状态落盘还是不对」)
+
+- **D34-1 核对:落盘没有丢**。重放 aicontest 会话(11-06 起、472MB、88 次压缩)里全部 471 次 todo 调用:每次都有对应的 `todo-state` 条目,`list` 输出与调用历史逐条一致,没有任何一次「标了 done 却画成未完成」。
+- **D34-2 病因三层**:①那个会话把 `todo add` 当交接日志——每条是一段几百字的「【任务单·二百八十四(23:20,接 #877)】…最新真相源」(文本中位 1966 字,244 条里 219 条含换行),这种条目永远不会被标 done:11-24 起 add 300 多次、done 2 次、archive 2 次。②工具只让 done 自动沉降(保留 3 条),pending 只能靠模型主动 archive——11-18 工单的修法(截断显示 + 提供 archive)在模型不自觉时等于永不沉降。③结果行「3/N 完成」里的 3 是饱和值(done 最多留 3 条),完成数从 11-20 起永远是 3。实测该会话最后一次状态:244 条(240 pending);旧 `list` 输出 333 行、74,320 字符(约 2 万 token 一次),且最新的任务单不在默认视图里(最旧的 40 条把它挤掉)。
+- **D34-3 修法**:①`settle`:pending 也机械沉降——活动清单只留最近 `PENDING_KEEP`(40)条 pending 与最近 3 条 done,in_progress 永不沉降;回执写明「最旧的 N 条 pending 已沉降」。②累计计数:`TodoState` 加 `settledDone`／`settledPending`(旧条目缺省 0,向后兼容),`done` 显示累计完成数;list 首行与结果行改为「已完成 X · 未完成 Y」。③每行有界:条目文本折叠空白并截到 `ROW_CHARS`(120)字符——一条「任务单」不再撑出几十行,也消除了多行文本伪造条目行;`add` 的回执与调用行同样截断。④描述改写:明确「每条是能被标 done 的具体动作——不是日志、交接摘要或状态快照」,guidelines 加一条;去掉「持久化／自动回放」这类诱导把它当备忘录的措辞。
+- **D34-4 实测**:同一份真实状态过新逻辑——活动 44 条(40 pending + 1 in_progress + 3 done),沉降 200 条;`list` 输出 42 行、5,112 字符(降 93%),首行「已完成 37 · 未完成 41」。
+- **D34-5 守卫**:behavioral——`test_pending_beyond_forty_settles_on_commit_and_is_reported`、`test_done_counter_counts_the_settled_ones`、`test_settled_counters_survive_restart_and_default_on_old_entries`、`test_clear_resets_settled_counters`、`test_handoff_notes_flood_renders_bounded`(300 条长文重放);变异验证:去掉 pending 沉降 4 条红、去掉累计完成数 1 条红。pattern lint `todo_single_in_progress_anchor` 加 pending 沉降的结构断言,`todo_output_bounded` 加每行截断断言。driver 的大夹具改走 stdin(命令行参数有上限)。
+- **D34-6 生效与影响**:description 变了——在跑的 pi 实例要**重启**才对模型生效(`/reload` 不刷新工具 schema);aicontest 现有的 240 条 pending 在下一次任何写操作时沉降到 40 条,最新的任务单都还在;更早的全史仍在会话 jsonl 的 `todo-state` 条目里。
+- **D34-7 没做的**:①不改 aicontest 侧的工作流(把任务单写进 todo 是它那个会话自己的策略,它的 AGENTS.md 里没有这条规则)——只告知;②list 排序保持「非 pending 优先、pending 按加入顺序」;③沉降阈值 40 与 list 上限对齐,不做配置项。

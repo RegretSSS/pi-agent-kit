@@ -7,6 +7,7 @@
 - **问题即 lint**:每个踩过的坑固化成一条机械规则(一规则一文件:结构约定 → pattern 源码扫描,行为语义 → behavioral 加载真模块重放原始失败输入),`pytest + run-lints.sh` 双 gate 全绿才允许提交
 - **memory 系统**:`node:sqlite` FTS5 trigram 中文全文检索、双桶 scoped(项目桶按 cwd 映射不进仓/全局桶)、查重闸(规则腔分流到 lints)、增量更新(append 段落/命名小节替换,围栏感知)、项目全量+全局分层索引注入、trigram 自动召回(recall 消息,会话内不重复,compact 后重注入)
 - **tasks 后台任务**:append-only journal 单一真相、跨会话状态增量重放、pid 复用防护(`/proc` starttime)、owner 必收通知
+- **todo**:待办清单,同时刻仅一个 in_progress;done 只留最近 3 条、pending 只留最近 40 条,更旧的自动沉降,完成数是累计值;每条是一行能被标 done 的动作,不是日志
 - **compact 闭环**:模型在自然工作边界自主发起压缩(摘要强制携带 `<fold-index>` 索引头,单活代际链,蒸馏并集),压缩完成自动注入 `[compact 完成]` 续作唤醒词(按 fold-index 重定位,willRetry 时不扰)
 - **context-gauge 自主运行监控**:工具结果按需附加水位+时钟行(15min 时间档/5% 水位档/30% 提示 50% 催压缩/50% 后每工具直报),TUI footer 常显——频控对齐 CC gauge_hook
 - **pi-guard**:每条 bash 命令跑在各自的 cgroup scope 里(slice 聚合内存硬顶、禁 swap),对失控的临时脚本判型——空转热循环即停、附证据并删掉它的输出转存件,无界累积被内核终止时在回执里说明,合法大内存与缓慢增长只标注不动;systemd 不可用时降级为仅观测

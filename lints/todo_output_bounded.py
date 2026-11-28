@@ -31,6 +31,8 @@ def main() -> int:
         violations.append("details 仍携带全量 todos 数组——tool result 落盘成第二膨胀源(该会话 16.3MB 实证)")
     if "是进行中锚点" not in source:
         violations.append("archive 不保护 in_progress 锚点——批量归档会把活动锚点一起清掉,单锚点纪律失守")
+    if "ROW_CHARS" not in source or not re.search(r"#\$\{t\.id\}: \$\{rowText\(t\.text\)\}", source):
+        violations.append("list 的每行未截断——多行长文条目(交接式「任务单」)一条就撑出几十行,40 条上限形同虚设,还能伪造条目行")
     if violations:
         print(f"todo_output_bounded: {len(violations)} 处违规")
         for v in violations:
