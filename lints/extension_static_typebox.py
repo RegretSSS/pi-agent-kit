@@ -30,7 +30,10 @@ def main() -> int:
             violations.append(f"{path.name}: 顶层值导入 {match.group(3)}({', '.join(values)}) — 必须 await import 进 async factory(D3-7,driver 裸 node 跑不通)")
     for violation in violations:
         print(f"extension_static_typebox: {violation}")
-    return 1 if violations else 0
+    if violations:
+        return 1
+    print("extension_static_typebox: ok")
+    return 0
 
 
 if __name__ == "__main__":

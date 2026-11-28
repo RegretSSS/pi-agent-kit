@@ -124,6 +124,26 @@ class TestAgentsmdIndexConsistency:
         assert "指向不存在的文件 ghost.md" in problems
 
 
+def missing_verdicts(output: str) -> list[str]:
+    found = []
+    name, verdicts = None, []
+    for line in output.splitlines():
+        if line.startswith("== "):
+            if name is not None and not verdicts:
+                found.append(name)
+            name, verdicts = line[3:], []
+        elif name is not None and (line.startswith(f"{name}: ok") or line.startswith(f"{name}: skip")):
+            verdicts.append(line)
+    if name is not None and not verdicts:
+        found.append(name)
+    return found
+
+
+def test_missing_verdicts_spots_a_silent_rule() -> None:
+    assert missing_verdicts("== alpha\nalpha: ok\n== silent\n== beta\nbeta: note\nbeta: skip(无 pi)\n") == ["silent"]
+    assert missing_verdicts("== a\na: ok(说明)\n\n== b\nb: ok\n") == []
+
+
 def test_run_lints_green(tmp_path) -> None:
     clean_repo = make_repo(tmp_path)
     env = {
@@ -139,6 +159,8 @@ def test_run_lints_green(tmp_path) -> None:
         env=env,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+    silent = missing_verdicts(result.stdout)
+    assert silent == [], f"这些 lint 通过时没有结论行,静默通过与静默失效分不清: {silent}"
 
 
 def test_foreign_owned_extension_absent_from_repo():

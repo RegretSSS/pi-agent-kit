@@ -16,6 +16,7 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D2-5 no-secrets 的 zai 形态**:`zai[-_][A-Za-z0-9_-]{12,}`(server/变量名前缀形态)之外,增加 z.ai API key 实际形态 `\b[0-9a-f]{32}\.[A-Za-z0-9]{12,}\b`。理由:本机 CC 配置实测该 key 形态(32 hex + `.` + 尾串),前缀形态扫不出值本身。
 - **D2-6 gate 提交流程顺序**:先 `git add` 再跑 run-lints.sh。理由:commit lint 允许纯 staged 行,未 add 的新文件是 untracked 必 fail,顺序颠倒会让 gate 永远红。
 - **D2-7 commit lint 的仓路径可注入**:`COMMIT_MUST_CLEAR_REPO` 环境变量覆盖检查目标。理由:pytest 内跑 run-lints.sh 时工作树必然带未 add 改动(自指冲突),测试把该项指到临时干净仓。
+- **D2-8 每条 lint 必须给出结论行(2026-11-29)**:`extension_static_typebox` 通过时什么都不打印,只有违规才出声——按退出码看 gate 是绿的,按 `: ok` 行核对输出的人会漏掉它,而且「规则跑了并通过」与「规则根本没生效」在输出上无法区分。守卫放在 pytest 而不是 run-lints.sh:`test_run_lints_green` 本就捕获全量输出,加一条断言「每条规则的区段内都有 `<name>: ok` 或 `<name>: skip` 行」,反向用例覆盖静默规则;拿掉那条 ok 行即红。不在 run-lints.sh 里硬查的理由:`enable-gate.sh` 会把它装进别的仓去跑那些仓自己的 lint,它们的输出格式不受本仓约束,硬查会波及。结论行允许 `skip` 是因为该单测的隔离环境里本来就没有 pi(真实会话类 lint 如实打 skip);区段内任何位置出现都算——`pi_guard_tool_call_order` 找不到 pi 时先打一行说明再打 ok。
 
 ## D4
 
