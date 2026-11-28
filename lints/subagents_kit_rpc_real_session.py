@@ -122,20 +122,23 @@ def resolve_entry() -> tuple[Path | None, str, Path | None]:
     try:
         metadata = json.loads(kit_git(repo, "show", f"{branch}:package.json"))
         installed_version = json.loads((deployed / "package.json").read_text())["version"]
-        if metadata["version"] != installed_version:
-            return fallback(f"{branch} 分支基线 {metadata['version']} 与已安装 {installed_version} 不一致")
-        archive = kit_git(repo, "archive", branch, "src")
+        baseline = os.environ.get("PI_SUBAGENTS_KIT_BASELINE") or installed_version
+        if metadata["version"] != baseline:
+            return fallback(f"{branch} 分支基线 {metadata['version']} 与期望基线 {baseline}(已安装 {installed_version})不一致")
+        tracked = kit_git(repo, "ls-tree", "--name-only", branch).decode().split()
+        archive = kit_git(repo, "archive", branch, *[name for name in ("src", "skills") if name in tracked])
         head = kit_git(repo, "rev-parse", "--short", branch).decode().strip()
         scratch = Path(tempfile.mkdtemp(prefix="kit-subagents-src-"))
         package = scratch / "node_modules/@tintinweb/pi-subagents"
         package.mkdir(parents=True)
         (package / "package.json").write_text(json.dumps(metadata))
         subprocess.run(["tar", "-x", "-C", str(package)], input=archive, check=True)
+        dep_root = Path(os.environ.get("PI_SUBAGENTS_DEP_ROOT") or installed)
         for name in metadata.get("dependencies", {}):
             target = scratch / "node_modules" / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            os.symlink(installed / name, target)
-        return package / "src/index.ts", f"{branch}@{head}{KIT_LABEL}", scratch
+            os.symlink(dep_root / name if (dep_root / name).exists() else installed / name, target)
+        return package / "src/index.ts", f"{branch}@{head}·基线{metadata['version']}{KIT_LABEL}", scratch
     except (subprocess.CalledProcessError, KeyError, OSError):
         if scratch is not None:
             shutil.rmtree(scratch, ignore_errors=True)
