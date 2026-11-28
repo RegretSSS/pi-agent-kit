@@ -85,6 +85,13 @@
 - 配置：`~/.pi/agent/pi-guard.json`，键见 `DEFAULT_CONFIG`（`enabled`、`reserveFrac`、`sliceMaxBytes`（只接受正数）、`slice`、`spinWindowSec`、`minOutBytesPerSec`、`maxInBytesPerSec`、`repeatFrac`…）；`tickMs` 夹到 [50, 5000]，`rateWindowMs` 不超过时间线跨度的一半；测试经 `PI_GUARD_CONFIG` 指定路径
 - 测试面：`tests/pi_guard_driver.mjs`（`unit` 纯函数时间线重放；`run` 以假 pi API + 假 bash 工具跑仅观测模式，事件按 pi 的真实顺序发射）；`lints/pi_guard_e2e_containment.py` 用 pi 真实 bash 工具 + 真实 systemd-run 跑隔离模式，slice 名独立于生产（不得含连字符——systemd 把连字符当层级分隔），不可用时跳过并说明；`lints/pi_guard_real_session.py` 起**真实 `pi -p` 进程**（隔离的 agent 目录 + 指向本地脚本化模型服务的自定义提供方，零 token 成本），断言跟踪、限额在位与补回、空转即停在真实事件顺序下成立；`lints/pi_guard_tool_call_order.py` 钉住事件顺序；`lints/pi_guard_unit_names_unique.py` 断言同进程两个扩展实例并发时 unit 名不撞车
 
+## D27 · TUI 单行渲染扩展 `extensions/quiet-tui.ts`（2026-11-28）
+
+- 经 `pi.registerToolRenderer` 把工具调用折叠成单行：每次调用 = 硬空行 + 摘要行（`$ cmd ✓ 1.2s`／`✗` + 错误首行），运行中显示末 3 行预览；Ctrl+O 或鼠标点击展开时委托回 pi 原渲染器
+- 接管内建工具、`mcp__*` 与没有自带渲染器的扩展工具；自带渲染器的（Agent、SubagentWorkflow、todo）原样透传
+- 只改显示：不重注册工具、不改 schema、模型可见结果不变；HTML 导出不受损
+- 参数文本入行前清 OSC/CSI/C0（单行渲染的安全前提）
+
 ## 部署（每件完成即部署+实测，独立 commit）
 
 - desktop：`extensions/*.ts` → `~/.pi/agent/extensions/`；MCP 同步实跑；AGENTS.md 落位

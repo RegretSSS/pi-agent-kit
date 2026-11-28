@@ -228,3 +228,15 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D26-4 主会话怎么读到**:kit 的 list/get 快照带回 `sessionName`;`bg_status(agent:<id>)` 多一行 `标签: …`(快照没有该字段就不打,兼容旧部署位)。
 - **D26-5 守卫**:E2E `subagents_kit_rpc_real_session`(新增一步真工作流——`SubagentWorkflow` + `scriptPath`;Agent 起的、失败的、工作流起的三种子代理都断言会话名,并核对会话文件里落盘的名字;kit 的工作流 RPC 由此第一次有了真会话覆盖)、`bg_tools_real_session`(bg_status 原样回显)、behavioral `test_bg_status_agent_shows_session_label`。踩坑:pi-subagents 的工作流 API 两版都是 `agent(prompt, { label })`,`agent(label, prompt)` 是 Claude Code 的形状——传错报 `agent(prompt, opts) expects opts to be an object`。
 - **D26-6 部署**:kit 补丁随 3c5b05f 一起等空档同步;在那之前会话名仍是旧形状,两版都满足 D26-3 的判别。
+
+## D27(TUI 工具调用折叠成单行,2026-11-28,用户「pi的minimal补丁如果GitHub有高星实现，可以拉来用用看」)
+
+- **D27-1 选型:自写,不引入第三方**。刷屏的实测来源(100 列、9 个调用,走 pi 自己的 `ToolExecutionComponent`):每次调用前面有一个硬空行,默认外壳 `Box` 再上下各垫一行,合计 4~17 行/次——bash 折叠态带末 5 行预览,没有自带渲染器的工具(bg_*、subagent-jobs、memory、pi-guard、MCP)走通用回退「标题 + 输出前 10 行」。GitHub/npm 搜到三个现成实现,都不够格「高星」或不对口:`@diegopetrucci/pi-quiet-tools`(所在仓库 68 星、月下载约 1361、MIT、11-27 仍在发版)只接管 7 个内建与 `mcp__*`,实测 101 行 → 56 行(55%),每条固定 5 行其中 3 行空白,`read` 原本 4 行反而变 5 行,扩展工具不覆盖;`fahmiirsyadk/pi-minimal-toolcall`(2 星,npm 上只发了 0.2.1 旧版——正是重注册内建工具的做法,GitHub 0.5.0 的干净设计未发布)自带 4 个批量工具改工具 schema;`pi-compact-display`(1 星,npm 写 ISC、仓库写 GPL-3.0)。同一实测台自写 self-shell 单行:101 行 → 18 行(18%),覆盖全部工具。
+- **D27-2 接管规则**:一个 `pi.registerToolRenderer` resolver。内建 8 个、`mcp__*`、以及没有自带渲染器的工具(含已卸载的)接管;自带渲染器的(`Agent`、`SubagentWorkflow`、`todo`)原样 `next()`——pi-subagents 的运行进度卡(spinner、活动、用量)有价值,不压。不重注册任何工具:schema、description、execute 一字不动,所以不改模型可见面、不依赖 aicontest 空档。
+- **D27-3 折叠形态**:`renderShell: "self"` 去掉色块与上下垫,每次调用 = 硬空行 + 1 行摘要(空行是 pi 组件硬编码,扩展层去不掉)。行尾状态:参数未收尾 ` …`,成功 `✓ 1.2s`,失败 `✗` 且多一行红色错误首行(失败原因不能藏在展开态后面);运行中有流式输出时显示末 3 行预览(长命令不静默),结束即收起。不带 `ctrl+o` 提示——pi 页脚已有。
+- **D27-4 展开委托与 HTML 导出**:展开态委托回原渲染器(`PaddedFrame` 补回左缩进;`lastComponent` 是自家的行/框时解包或置空再传)。原工具没有渲染器时抛 `DelegateToDefault`,pi 的 `ToolExecutionComponent` 接住走原生回退——TUI 得全文。HTML 导出(`core/export-html`)对结果同时渲染折叠态与展开态:折叠为空、展开为全文,导出的页面直接显示全文;无渲染器的工具回落结构化结果。导出不丢内容是承重性质,E2E 钉住。
+- **D27-5 单行渲染的安全前提**:参数文本先清 OSC、CSI、C0 控制字符,再折叠空白。bash 原生渲染器不清洗是因为它按多行原样显示;压成单行后不清洗,`\x1b]0;标题\x07` 可改终端标题、`\n` 可撑开行数。
+- **D27-6 守卫**:behavioral `quiet_tui_collapsed_rows`(真 pi-tui + 真 `ToolExecutionComponent` 重放 11 个场景并走 pi 的 HTML 导出渲染器;反向验证——折叠态吐全文、清洗失效、自带渲染器的也接管,各自变红)、`test_quiet_tui` 纯函数、E2E `quiet_tui_real_session`(有无扩展两个隔离会话,模型可见的工具结果逐字节一致,加载无报错)、`test_deploy` 的部署集合加入新文件。
+- **D27-7 踩坑**:①lint 找 pi 必须带 `~/.local/bin/pi` 兜底——本机 `pi` 不在 PATH,只靠 `which` 会直接 skip 且 exit 0,gate 照样绿(静默失效);②Node strip-only 模式不支持 TS 参数属性(`constructor(private x)`),须显式字段;③`ToolRenderContext` 不从包根导出,用 `Parameters<NonNullable<ToolRenderers["renderCall"]>>[2]` 推导;pi-tui 的 `Component` 要求 `invalidate()` 必有;④driver 剥 ANSI 只能剥 SGR 颜色码——连 OSC 一起剥会掩盖注入,断言「行内不得残留 ESC/C0」就落空;⑤`fs/promises.readFile` 不收数字 fd,读 stdin 用同步 `readFileSync(0, "utf8")`。
+- **D27-8 没做的**:相邻调用合并成一行(`pi-minimal-toolcall` 的做法:同一组里前面的调用画 0 行、最后一条画汇总行,纯扩展可行,留二期——逐条可见便于回看模型做了什么);行内计时 spinner(pi 自带 working indicator)。
+- **D27-9 部署**:单文件 `cp extensions/quiet-tui.ts ~/.pi/agent/extensions/`;不改 schema,不需要空档。在跑的会话 reload 才换(不替用户重启),新会话自动加载;回退 = 删文件 + reload。
