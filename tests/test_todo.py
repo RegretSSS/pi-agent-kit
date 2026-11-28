@@ -219,3 +219,19 @@ def test_append_failure_returns_error_not_crash() -> None:
 def test_command_shows_list() -> None:
     out = drive("session", {"steps": [{"action": "add", "text": "x"}]})
     assert out["command"] and "#1: x" in out["command"][0]
+
+
+def test_renderers_take_pi_argument_shapes() -> None:
+    out = drive("render", {"args": {"action": "add", "text": "写测试"}, "details": {"action": "add", "done": 1, "total": 3, "nextId": 4}})
+    assert out["call"] == '[todo ][add] ["写测试"]'
+    assert out["result"] == "[1/3 完成]"
+    failed = drive("render", {"args": {"action": "status", "id": 9}, "details": {"action": "status", "error": "#9 不存在", "done": 1, "total": 3, "nextId": 4}})
+    assert failed["call"] == "[todo ][status] [#9]"
+    assert failed["result"] == "[Error: #9 不存在]"
+
+
+def test_unknown_action_returns_error_result() -> None:
+    out = drive("session", {"steps": [{"action": "bogus"}]})
+    assert out["steps"][0]["text"] == "Error: 未知 action: bogus"
+    assert out["steps"][0]["error"] == "未知 action: bogus"
+    assert out["entries"] == []

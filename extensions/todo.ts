@@ -4,6 +4,7 @@ export type TodoStatus = "pending" | "in_progress" | "done";
 export type TodoItem = { id: number; text: string; status: TodoStatus; doneAt?: number };
 export type TodoState = { todos: TodoItem[]; nextId: number };
 export type TodoDetails = { action: string; error?: string; done: number; total: number; activeId?: number; nextId: number };
+export type TodoParams = { action: string; text?: string; id?: number; status?: TodoStatus };
 
 export const TODO_STATE_ENTRY = "todo-state";
 export const DONE_KEEP = 3;
@@ -16,19 +17,12 @@ export function settleDone(todos: TodoItem[]): TodoItem[] {
 }
 
 export function markStatus(todos: TodoItem[], id: number, status: TodoStatus): TodoItem[] {
-	const target = todos.find((t) => t.id === id);
-	if (!target) return todos;
-	const next = todos.map((t) => ({ ...t }));
-	const hit = next.find((t) => t.id === id);
-	hit.status = status;
-	if (status === "done") hit.doneAt = Date.now();
-	else hit.doneAt = undefined;
-	if (status === "in_progress") {
-		for (const t of next) {
-			if (t.id !== id && t.status === "in_progress") t.status = "pending";
-		}
-	}
-	return next;
+	if (!todos.some((t) => t.id === id)) return todos;
+	return todos.map((t) => {
+		if (t.id === id) return { ...t, status, doneAt: status === "done" ? Date.now() : undefined };
+		if (status === "in_progress" && t.status === "in_progress") return { ...t, status: "pending" };
+		return { ...t };
+	});
 }
 
 export function reconstructTodos(branch: { type: string; customType?: string; data?: unknown }[]): TodoState {
@@ -98,7 +92,8 @@ export default async function (pi: ExtensionAPI) {
 			id: Type.Optional(Type.Integer({ description: "status/toggle/archive 的目标条目 id" })),
 			status: Type.Optional(StringEnum(["pending", "in_progress", "done"] as const, { description: "status 动作的目标状态" })),
 		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
+			const params = rawParams as TodoParams;
 			const fail = (error: string): { content: { type: "text"; text: string }[]; details: TodoDetails } => ({
 				content: [{ type: "text", text: `Error: ${error}` }],
 				details: summarize(params.action, error),
@@ -157,14 +152,16 @@ export default async function (pi: ExtensionAPI) {
 					return commit("clear", `已清空 ${count} 条`);
 				}
 			}
+			return fail(`未知 action: ${params.action}`);
 		},
-		renderCall(args, theme) {
+		renderCall(rawArgs, theme) {
+			const args = rawArgs as TodoParams;
 			let text = theme.fg("toolTitle", theme.bold("todo ")) + theme.fg("muted", args.action);
 			if (args.text) text += ` ${theme.fg("dim", `"${args.text}"`)}`;
 			if (args.id !== undefined) text += ` ${theme.fg("accent", `#${args.id}`)}`;
 			return new Text(text, 0, 0);
 		},
-		renderResult(result, theme) {
+		renderResult(result, _options, theme) {
 			const details = result.details as TodoDetails | undefined;
 			if (details?.error) return new Text(theme.fg("error", `Error: ${details.error}`), 0, 0);
 			const summary = `${details?.done ?? 0}/${details?.total ?? 0} 完成` + (details?.activeId !== undefined ? ` · 进行中 #${details.activeId}` : "");

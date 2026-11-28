@@ -57,6 +57,13 @@ if (scenario === "mark-status") {
 		await commands["todos"].handler([], { ui: { notify: (text) => notes.push(text) } });
 		return notes;
 	})() : null;
+} else if (scenario === "render") {
+	const tool = {};
+	await factory({ on: () => {}, registerTool: (t) => { tool.todo = t; }, registerCommand: () => {}, appendEntry: () => {} });
+	const theme = { fg: (_color, text) => `[${text}]`, bold: (text) => text };
+	const options = { expanded: false, isPartial: false };
+	out.call = tool.todo.renderCall(payload.args ?? {}, theme, {}).text;
+	out.result = tool.todo.renderResult({ content: [], details: payload.details }, options, theme, {}).text;
 } else {
 	throw new Error(`unknown scenario: ${scenario}`);
 }
