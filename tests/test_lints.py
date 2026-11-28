@@ -176,3 +176,24 @@ class TestNoLongSleep:
         assert "未限定 toolName==bash" in problems
         assert "lastIndex" in problems
         assert "task_create" in problems
+
+
+class TestReadmeExtensionsMatchDir:
+    def test_repo_readme_passes(self) -> None:
+        mod = load("readme_extensions_match_dir")
+        assert mod.lint(REPO) == []
+
+    def test_both_directions_flagged(self, tmp_path) -> None:
+        mod = load("readme_extensions_match_dir")
+        (tmp_path / "extensions").mkdir()
+        (tmp_path / "extensions" / "a.ts").write_text("")
+        (tmp_path / "README.md").write_text("```\nextensions/   pi 扩展(b / c)\n```\n")
+        problems = "\n".join(mod.lint(tmp_path))
+        assert "名单缺 a" in problems
+        assert "名单多了 b" in problems
+        assert "名单多了 c" in problems
+
+    def test_missing_listing_line_flagged(self, tmp_path) -> None:
+        mod = load("readme_extensions_match_dir")
+        (tmp_path / "README.md").write_text("# 没有结构节\n")
+        assert "缺" in mod.lint(tmp_path)[0]
