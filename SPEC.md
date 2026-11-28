@@ -56,6 +56,7 @@
 
 - `task_create(cmd, cwd?, name?)`：setsid 拉起 + `~/.agents/tasks/tasks.jsonl`（id/pid/cmd/state/created）+ 输出环形缓冲 `~/.agents/tasks/<id>.log`（上限 256KB 环回）+ 退出码落盘 `<id>.exit`（实例丢失后仍可观测，D25）
 - **统一管理面（2026-11-28，见 D25）**：`bg_list(kind?)` / `bg_status(handle?, wait?, until: exit|idle)` / `bg_log(handle, since?)` / `bg_stop(handle)` / `bg_schedule(action)`，句柄 `task:<id>` / `agent:<id|@名>` / `wf:<run>` / `job:<id>`；命令任务、子代理、workflow run、定时任务一套工具，旧工具名不做别名
+- **子代理会话标签**（2026-11-28，见 D26）：pi-subagents kit 分支给子会话起名 `<label／name> · workflow:<run id>｜agent · 父:<主会话 id 前 8 位> · <类型>#<agent id 前 8 位十六进制>`；`#`+8 位十六进制收尾不变（通知归属与 a2a-inbox 的判别口径）。`bg_status(agent:<id>)` 原样给出该标签
 - **结束自动唤醒**：轮询 2s 检测退出 → `pi.sendMessage` 排队通知（id/name/exit code/tail 200 字符），多条同时结束合并一条
 - **通知投递时机**（2026-11-28 收窄，见 D22）：模型回合进行中经 pi 原生 steer 插到当前工具批之后、下次 LLM 调用之前；仅在压缩/分支摘要等「不空闲且无回合在跑」的窗口内扣留，窗口结束即冲洗
 - **通知归属**（2026-11-28，见 D23）：只在创建该任务的会话投递——子代理会话（pi-subagents 拉起，会话名以 `#`+8 位十六进制结尾）里的 tasks 实例只结算自己创建的任务，不回收、不发孤儿告警；任何情况下「后台任务结束」不进子代理上下文

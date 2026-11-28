@@ -228,6 +228,15 @@ def test_bg_status_failed_agent_with_empty_result_prints_no_result_line(tmp_path
     assert failed["details"]["status"] == "error"
 
 
+def test_bg_status_agent_shows_session_label(tmp_path) -> None:
+    label = "v8-audit · agent · 父:01a221a5 · general-purpose#984b6192"
+    calls = [{"tool": "bg_status", "params": {"handle": "agent:agent-run1"}}]
+    shown = tools({"upstream": {"list": {"agents": [{**AGENT_DONE, "sessionName": label}]}}, "calls": calls}, tmp_path)[0]
+    plain = tools({"upstream": {"list": {"agents": [AGENT_DONE]}}, "calls": calls}, tmp_path)[0]
+    assert f"标签: {label}" in shown["text"] and shown["text"].index("标签:") < shown["text"].index("result(尾")
+    assert "标签:" not in plain["text"]
+
+
 def test_bg_status_workflow_rpc_and_journal_fallback(tmp_path) -> None:
     detail = tools({"upstream": {"workflow_status": STATUS_DETAIL, "workflow_list": {"runs": []}}, "calls": [{"tool": "bg_status", "params": {"handle": "wf:wf_abc123def456"}}]}, tmp_path)[0]
     assert "[error] | rpc timeout" in detail["text"] and detail["details"]["waitedMs"] == 0

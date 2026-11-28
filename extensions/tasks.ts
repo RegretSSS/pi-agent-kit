@@ -729,6 +729,8 @@ export type AgentSnapshot = {
 	toolUses?: number;
 	sessionFile?: string;
 	outputFile?: string;
+	sessionId?: string;
+	sessionName?: string;
 	tokens?: { input: number; output: number; total: number };
 	result?: string;
 	error?: string;
@@ -1236,6 +1238,7 @@ async function journalFallbackStatus(key: string, ctx: SessionContext, lines: nu
 				const { access, agent } = await agentSnapshot(target.key);
 				if (!agent) return access.state === "absent" ? textResult(NO_SUBAGENTS, { found: false }, true) : access.state === "unavailable" ? textResult(SECTION_UNAVAILABLE, { found: false }, true) : missingResult("agent", target.key);
 				const lines = [agentRow(agent)];
+				if (agent.sessionName) lines.push(`标签: ${agent.sessionName}`);
 				if (agent.error !== undefined) lines.push(`error: ${headText(agent.error, ERROR_HEAD_CHARS)}`);
 				if (agent.result) lines.push(`result(尾 ${RESULT_TAIL_CHARS} 字): ${parseLogTail(agent.result, RESULT_TAIL_CHARS)}`);
 				if (waitedMs > 0) lines.push(`waited=${Math.round(waitedMs / 1000)}s`);

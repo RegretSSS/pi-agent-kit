@@ -19,6 +19,9 @@ CHILD_DONE = "rpc probe done"
 CHILD_FAILED = "rpc probe failed"
 FAIL_MARKER = "KIT_RPC_PROBE_FAIL"
 FAILURE_TEXT = "kit rpc boom"
+WF_MARKER = "KIT_RPC_PROBE_WF_CHILD"
+WF_TEXT = "KIT_RPC_WF_CHILD_TEXT"
+WF_CHILD_LABEL = "kit rpc wf child"
 REQUIRED_FEATURES = {"get", "list", "kit-schedule", "kit-workflow"}
 KIT_LABEL = "(kit 分支)"
 
@@ -41,15 +44,20 @@ export default function (pi) {
     });
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const terminal = new Set(["completed", "steered", "aborted", "stopped", "error"]);
-  async function settled(description, limitMs) {
+  async function settled(description, withWorkflow) {
     const seen = [];
-    const deadline = Date.now() + limitMs;
+    const deadline = Date.now() + 30000;
     for (;;) {
-      const reply = await call("list");
-      const agent = (reply?.data?.agents ?? []).find((item) => item.description === description);
+      const agents = (await call("list"))?.data?.agents ?? [];
+      const agent = agents.find((item) => item.description === description);
       if (agent) seen.push(agent.status);
-      if (agent && terminal.has(agent.status)) return { agent, seen, timeout: false };
-      if (Date.now() > deadline) return { agent: agent ?? null, seen, timeout: true };
+      const run = withWorkflow && agent?.workflowId !== undefined
+        ? ((await call("workflow_list"))?.data?.runs ?? []).find((item) => item.id === agent.workflowId) ?? null
+        : null;
+      if (agent && terminal.has(agent.status) && (!withWorkflow || (run && run.status !== "running" && run.status !== "paused"))) {
+        return { agent, run, seen, timeout: false };
+      }
+      if (Date.now() > deadline) return { agent: agent ?? null, run, seen, timeout: true };
       await sleep(200);
     }
   }
@@ -57,16 +65,21 @@ export default function (pi) {
     name: "probe_rpc",
     label: "Probe Rpc",
     description: "probe",
-    parameters: Type.Object({ description: Type.String() }),
-    async execute(_toolCallId, params) {
+    parameters: Type.Object({ description: Type.String(), workflow: Type.Optional(Type.Boolean()) }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const ping = await call("ping");
-      const { agent, seen, timeout } = await settled(params.description, 30000);
+      const { agent, run, seen, timeout } = await settled(params.description, params.workflow === true);
       const get = agent ? await call("get", { agentId: agent.id }) : null;
       const missing = await call("get", { agentId: "nope" });
-      return { content: [{ type: "text", text: JSON.stringify({ ping, agent, get, missing, seen, timeout }) }] };
+      const parentId = ctx?.sessionManager?.getSessionId?.();
+      return { content: [{ type: "text", text: JSON.stringify({ ping, parentId, agent, run, get, missing, seen, timeout }) }] };
     },
   });
 }
+'''
+
+WORKFLOW_SCRIPT = f'''export const meta = {{ name: "kit-rpc-label", description: "label probe" }};
+return await agent("{WF_MARKER}: report done", {{ label: "{WF_CHILD_LABEL}" }});
 '''
 
 
@@ -137,7 +150,7 @@ def answered_count(request: dict) -> int:
     return sum(1 for message in request.get("messages") or [] if message.get("role") == "tool")
 
 
-def next_call(answered: int) -> tuple[str, dict] | None:
+def next_call(answered: int, script: Path) -> tuple[str, dict] | None:
     if answered == 0:
         return "Agent", {"prompt": f"{CHILD_MARKER}: report done", "description": CHILD_DONE, "subagent_type": "general-purpose"}
     if answered == 1:
@@ -146,11 +159,15 @@ def next_call(answered: int) -> tuple[str, dict] | None:
         return "Agent", {"prompt": f"{FAIL_MARKER}: report done", "description": CHILD_FAILED, "subagent_type": "general-purpose"}
     if answered == 3:
         return "probe_rpc", {"description": CHILD_FAILED}
+    if answered == 4:
+        return "SubagentWorkflow", {"scriptPath": str(script)}
+    if answered == 5:
+        return "probe_rpc", {"description": WF_CHILD_LABEL, "workflow": True}
     return None
 
 
 def probe_results(requests: list[dict]) -> list[dict]:
-    parents = [request for request in requests if CHILD_MARKER not in user_text(request) and FAIL_MARKER not in user_text(request)]
+    parents = [request for request in requests if not any(marker in user_text(request) for marker in (CHILD_MARKER, FAIL_MARKER, WF_MARKER))]
     if not parents:
         return []
     return [
@@ -158,6 +175,19 @@ def probe_results(requests: list[dict]) -> list[dict]:
         for message in parents[-1].get("messages") or []
         if message.get("role") == "tool" and '"ping"' in str(message.get("content"))
     ]
+
+
+def persisted_session_name(path: str | None) -> str | None:
+    if not path or not Path(path).exists():
+        return None
+    names = []
+    for line in Path(path).read_text().splitlines():
+        if not line.strip():
+            continue
+        entry = json.loads(line)
+        if entry.get("type") == "session_info":
+            names.append(entry.get("name"))
+    return names[-1] if names else None
 
 
 class ScriptedModel(BaseHTTPRequestHandler):
@@ -192,10 +222,12 @@ class ScriptedModel(BaseHTTPRequestHandler):
         if FAIL_MARKER in prompt:
             self.send_failure()
             return
-        if CHILD_MARKER in prompt:
+        if WF_MARKER in prompt:
+            deltas, finish = [{"role": "assistant", "content": WF_TEXT}], "stop"
+        elif CHILD_MARKER in prompt:
             deltas, finish = [{"role": "assistant", "content": CHILD_TEXT}], "stop"
         else:
-            call = next_call(answered_count(request))
+            call = next_call(answered_count(request), self.server.script_path)
             if call is None:
                 deltas, finish = [{"role": "assistant", "content": FINAL_TEXT}], "stop"
             else:
@@ -220,6 +252,9 @@ def run_session(pi: str, package_root: Path, subagents: Path, server: ThreadingH
     for path in (home, agent_dir, ext_dir / "node_modules", scratch):
         path.mkdir(parents=True)
     (ext_dir / "probe.ts").write_text(PROBE)
+    script = workdir / "label-probe.js"
+    script.write_text(WORKFLOW_SCRIPT)
+    server.script_path = script
     os.symlink(package_root / "node_modules" / "typebox", ext_dir / "node_modules" / "typebox")
     (agent_dir / "models.json").write_text(
         json.dumps({"providers": {PROVIDER: {"baseUrl": f"http://127.0.0.1:{server.server_address[1]}/v1", "api": "openai-completions", "apiKey": "scripted", "models": [{"id": "scripted"}]}}})
@@ -242,6 +277,33 @@ def run_session(pi: str, package_root: Path, subagents: Path, server: ThreadingH
     return result.stderr
 
 
+def expected_label(name: str, owner: str, parent_id: str, agent_id: str) -> str:
+    return f"{name} · {owner} · 父:{parent_id[:8]} · general-purpose#{agent_id[:8]}"
+
+
+def label_problems(done: dict, failed: dict, workflow: dict, persisted: dict[str, str | None]) -> list[str]:
+    problems = []
+    parent_id = str(done.get("parentId") or "")
+    for probe, description in ((done, CHILD_DONE), (failed, CHILD_FAILED)):
+        agent = probe.get("agent") or {}
+        expected = expected_label(description, "agent", parent_id, str(agent.get("id")))
+        if agent.get("sessionName") != expected:
+            problems.append(f"Agent 起的子代理会话名应是 {expected!r}: {json.dumps(agent, ensure_ascii=False)[:300]}")
+        if persisted.get(str(agent.get("id"))) != expected:
+            problems.append(f"会话文件里落下的名字应与快照一致({expected!r}): {persisted.get(str(agent.get('id')))!r}")
+    agent = workflow.get("agent") or {}
+    run = workflow.get("run")
+    if not run or run.get("status") != "completed" or agent.get("workflowId") != run.get("id"):
+        problems.append(f"工作流应跑完且子代理归属该 run: {json.dumps(workflow, ensure_ascii=False)[:300]}")
+        return problems
+    expected = expected_label(WF_CHILD_LABEL, f"workflow:{run['id']}", parent_id, str(agent.get("id")))
+    if agent.get("sessionName") != expected:
+        problems.append(f"工作流子代理会话名应是 {expected!r}: {json.dumps(agent, ensure_ascii=False)[:300]}")
+    if persisted.get(str(agent.get("id"))) != expected:
+        problems.append(f"工作流子代理的会话文件应落下 {expected!r}: {persisted.get(str(agent.get('id')))!r}")
+    return problems
+
+
 def lint(pi: str, package_root: Path, subagents: Path, source: str) -> list[str]:
     problems = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), ScriptedModel)
@@ -252,15 +314,16 @@ def lint(pi: str, package_root: Path, subagents: Path, source: str) -> list[str]
     try:
         with tempfile.TemporaryDirectory(prefix="kit-rpc-") as tmp:
             stderr = run_session(pi, package_root, subagents, server, Path(tmp))
+            probes = probe_results(server.requests)
+            persisted = {str((probe.get("agent") or {}).get("id")): persisted_session_name((probe.get("agent") or {}).get("sessionFile")) for probe in probes}
     finally:
         server.shutdown()
         server.server_close()
     if re.search(r"(extension|probe|subagents)[^\n]*(error|failed)", stderr, re.IGNORECASE):
         problems.append(f"真实会话里扩展报错: {stderr.strip()[-400:]}")
-    probes = probe_results(server.requests)
-    if len(probes) != 2:
-        return problems + [f"探针应取样完成与失败两个子代理的终态快照,实际 {len(probes)} 份: {stderr.strip()[-300:]}"]
-    done, failed = probes
+    if len(probes) != 3:
+        return problems + [f"探针应取样完成、失败、工作流三个子代理的终态快照,实际 {len(probes)} 份: {stderr.strip()[-300:]}"]
+    done, failed, workflow = probes
     ping = done["ping"]
     features = set((ping.get("data") or {}).get("features") or [])
     if not ping.get("success") or not REQUIRED_FEATURES <= features:
@@ -282,7 +345,7 @@ def lint(pi: str, package_root: Path, subagents: Path, source: str) -> list[str]
     failed_agent = failed.get("agent") or {}
     if failed_agent.get("status") != "error" or FAILURE_TEXT not in str(failed_agent.get("error")):
         problems.append(f"失败的子代理应把失败原因带回 error: {json.dumps(failed_agent, ensure_ascii=False)[:300]}")
-    return problems
+    return problems + label_problems(done, failed, workflow, persisted)
 
 
 if __name__ == "__main__":

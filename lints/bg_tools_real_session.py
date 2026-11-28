@@ -244,6 +244,9 @@ def lint(pi: str, package_root: Path, subagents: Path, source: str) -> list[str]
         return problems
     if "result(尾" not in agent_status or CHILD_DONE not in agent_status:
         problems.append(f"bg_status(agent) 应给出子代理结论的尾部: {agent_status[:300]}")
+    child = agent_id(listing, CHILD_OK) or ""
+    if not re.search(rf"^标签: {re.escape(CHILD_OK)} · agent · 父:[0-9a-f]{{8}} · general-purpose#{child[:8]}$", agent_status, re.MULTILINE):
+        problems.append(f"bg_status(agent) 应原样给出子代理会话的标签: {agent_status[:300]}")
     if "| error |" not in failed_status or "error:" not in failed_status or FAILURE_TEXT not in failed_status or "result(" in failed_status:
         problems.append(f"bg_status(失败的子代理) 应给出失败原因且不给空的 result 行: {failed_status[:300]}")
     return problems
