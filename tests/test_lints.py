@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -219,3 +221,41 @@ class TestReadmeExtensionsMatchDir:
         mod = load("readme_extensions_match_dir")
         (tmp_path / "README.md").write_text("# 没有结构节\n")
         assert "缺" in mod.lint(tmp_path)[0]
+
+
+WRONG_RENDERER = """import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+export default function (pi: ExtensionAPI) {
+	pi.registerTool({
+		name: "x",
+		label: "x",
+		description: "x",
+		parameters: {},
+		execute: () => ({ content: [] }),
+		renderResult(result, theme) {
+			return theme.fg("error", String(result.details));
+		},
+	});
+}
+"""
+
+
+class TestExtensionTypesCheck:
+    def available(self) -> bool:
+        mod = load("extension_types_check")
+        return (mod.ROOT / "node_modules" / "typescript" / "bin" / "tsc").exists() and mod.sdk_root() is not None
+
+    def test_repo_extensions_clean(self) -> None:
+        mod = load("extension_types_check")
+        if not self.available():
+            pytest.skip("仓内未装 typescript 或默认路径下无 pi")
+        assert mod.check(REPO) == []
+
+    def test_wrong_renderer_signature_flagged(self, tmp_path) -> None:
+        mod = load("extension_types_check")
+        if not self.available():
+            pytest.skip("仓内未装 typescript 或默认路径下无 pi")
+        (tmp_path / "extensions").mkdir()
+        (tmp_path / "extensions" / "bad.ts").write_text(WRONG_RENDERER)
+        problems = mod.check(tmp_path)
+        assert problems and all("bad.ts" in line for line in problems), problems
+        assert any("ToolRenderResultOptions" in line for line in problems), problems

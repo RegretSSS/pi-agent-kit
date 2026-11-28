@@ -101,6 +101,12 @@
 - 不认的形态（接受边界，D29-7）：变量／算术展开给的时长、十六进制浮点、内联解释器里的等待；不同 `sleep` 之间不累加
 - 测试面：`tests/no_long_sleep_driver.mjs` 重放原始失败输入（含误杀样例与「先长后短」两条连发，钉住 `g` 正则的 `lastIndex` 重置）；`lints/no_long_sleep.py` 守结构
 
+## D30 · 扩展类型检查进 gate（2026-11-29）
+
+- `extensions/*.ts` 由 `lints/extension_types_check.py` 用 `tsc --noEmit`（strict）对**已装 pi 的声明**检查；基线 `tsconfig.json`，与机器相关的 `paths`/`typeRoots` 由 lint 临时生成；`tests/test_lints.py` 里有一条真跑的测试，本机提交必过；缺 typescript 或缺 pi 时 `skip(原因)`
+- 工具渲染器的签名是 `renderCall(args, theme, context)`、`renderResult(result, { expanded, isPartial }, theme, context)`；pi 对渲染器抛错静默回退，签名写错不会报错、只会让自定义渲染失效
+- `StringEnum` 出来的工具入参是 `unknown`，在 execute 开头按类型收窄
+
 ## 部署（每件完成即部署+实测，独立 commit）
 
 - desktop：`extensions/*.ts` → `~/.pi/agent/extensions/`；MCP 同步实跑；AGENTS.md 落位

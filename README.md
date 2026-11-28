@@ -52,6 +52,7 @@ git clone https://github.com/RegretSSS/pi-agent-kit ~/.pi-agent-kit
 agents-md/    AGENTS.md 管理节版本化真相
 extensions/   pi 扩展(compact-tool / context-gauge / memory / no-long-sleep / no-rogue-background / pi-guard / quiet-tui / tasks / todo)
 lints/        机械规则(一规则一文件,run-lints.sh 自动发现)
+package.json / tsconfig.json   类型检查(devDependency typescript;lints/extension_types_check.py 对已装 pi 的声明跑 tsc,D30)
 scripts/      run-lints / enable-gate / sync-mcp / sync-subagents-kit,另有一次性的记忆迁移工具
 skills/       queue-watch / subagent-workflows
 tests/        pytest(pytest 驱动 node 直载 TS 模块;每条 lint 的反向用例也在这里)
