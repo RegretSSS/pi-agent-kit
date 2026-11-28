@@ -11,6 +11,7 @@ const POLL_INTERVAL_MS = 2000;
 const STOP_GRACE_MS = 5000;
 const NOTIFY_TAIL_CHARS = 200;
 const TASK_TTL_MS = 7 * 24 * 3600 * 1000;
+const SUBAGENT_SESSION_NAME = /#[0-9a-f]{8}$/;
 const CONTROL_CODES = /[\x00-\x08\x0b-\x1f\x7f]/g;
 const CSI_SEQUENCES = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
 
@@ -116,6 +117,10 @@ export function exitText(task: TaskRecord): string {
 	if (task.exitCode !== null) return `code=${task.exitCode}`;
 	if (task.exitSignal) return `signal:${task.exitSignal}`;
 	return "unknown(reaped,无退出观测)";
+}
+
+export function isSubagentSessionName(name: string | undefined): boolean {
+	return SUBAGENT_SESSION_NAME.test(name ?? "");
 }
 
 export function journalEventPlausible(event: TaskEvent): boolean {
@@ -410,6 +415,7 @@ export default async function (pi: ExtensionAPI) {
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
 	let sessionIdle: (() => boolean) | null = null;
 	let agentRunning = false;
+	let subagentSession = false;
 	const pendingNotify: string[] = [];
 
 function watchChild(id: string, child: ChildProcess): ChildEntry {
@@ -483,16 +489,28 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 			}
 			finished.push(registry.get(id)!);
 		}
+		if (subagentSession) {
+			await reportOwnExits(finished);
+			return;
+		}
+		await reapUnownedAndReport(finished);
+	}
+
+	async function reportOwnExits(finished: TaskRecord[]): Promise<void> {
+		for (const task of finished) {
+			await registry.shrinkTask(task);
+		}
+		await notifyFinished(finished);
+	}
+
+	async function reapUnownedAndReport(finished: TaskRecord[]): Promise<void> {
 		const reaped = await registry.reapDeadPids(new Set(children.keys()));
 		const orphaned = await registry.livingForeignTasks();
 		for (const task of orphaned) {
 			await registry.markOrphan(task.id);
 		}
 		await registry.shrinkOversizedLogs();
-		for (const task of [...finished, ...reaped]) {
-			await registry.shrinkTask(task);
-		}
-		await notifyFinished([...finished, ...reaped]);
+		await reportOwnExits([...finished, ...reaped]);
 		if (orphaned.length > 0) {
 			const orphanLines = orphaned.map((task) => `[${task.id}] ${task.name} pid=${task.pid} owner=${task.ownerPid}已死,任务仍存活`);
 			deliverNotify(`孤儿任务告警 ${orphanLines.length} 条(父进程已退出,任务仍在跑,请接管或 task_stop):\n${orphanLines.join("\n")}`);
@@ -671,10 +689,13 @@ function watchChild(id: string, child: ChildProcess): ChildEntry {
 
 	pi.on("session_start", async (_event, ctx) => {
 		sessionIdle = () => ctx.isIdle();
+		subagentSession = isSubagentSessionName(ctx.sessionManager?.getSessionName?.());
 		await registry.ensureLoaded();
-		await registry.reapDeadPids(new Set(children.keys()));
-		await registry.sweepOrphanClaims();
-		await registry.gcExpired();
+		if (!subagentSession) {
+			await registry.reapDeadPids(new Set(children.keys()));
+			await registry.sweepOrphanClaims();
+			await registry.gcExpired();
+		}
 		if (!pollTimer) {
 			pollTimer = setInterval(() => {
 				sweep().catch(() => {});

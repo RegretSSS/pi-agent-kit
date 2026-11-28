@@ -186,3 +186,11 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D22-3 以 agent_end 清零而非 agent_settled**:回合结束到核心置空闲之间 isStreaming 仍为 true,此时注入会 steer 进已收尾的循环;按 agent_end 清零后这一窗口按维护态扣留,待 agent_settled 的 sweep 冲洗(核心此时经 `_isEmittingAgentSettled` 把开回合延后到 settled 之后)。
 - **D22-4 守卫**:pattern lint `task_notify_deferred_during_compaction` 改钉新不变量(deliverNotify 禁止直看 sessionIdle,inMaintenance 必须同时看「不空闲」与「无回合」);behavioral 测试 `test_factory_notify_steered_during_run_held_during_maintenance` 覆盖回合内即时投递/维护态扣留/恢复后冲洗;新增 E2E `lints/tasks_notify_in_turn_real_session.py`——真 `pi -p` + 脚本化本地模型:task_create 后用一条 6s bash 把回合撑住,断言总共 3 次模型请求且第 3 次(模型从未调 task_output)已带「后台任务结束」;反向验证旧代码为 4 次请求。隔离靠改写 HOME(tasks 登记目录随 homedir)而非 PI_CODING_AGENT_DIR;扩展副本旁软链 pi 自带的 typebox 供解析。
 - **D22-5 已知边界**:手动 `/compact` 先 abort 在跑回合再进入压缩,恰在这一瞬间到达的通知会被 steer 进正在中止的循环,可能丢失(窄窗口,未处理)。task_output 的 since 缺省秒回、wait 等的是任何新输出而非退出、描述在教分片轮询——留待后台工具统一改造一并处理。
+
+## D23(task 通知归属:子代理会话只收自己创建的任务,2026-11-28,aicontest 回函 cc853c262080 要求「任何情况下不插进子代理的上下文」)
+
+- **D23-1 问题**:pi-subagents 拉起的子代理会话与父会话同进程,默认加载全部全局扩展,各自有一份 tasks 实例并各自巡检共享登记表 `~/.agents/tasks/tasks.jsonl`。旧 `sweep()` 的 `reapDeadPids` 把「登记表里仍是 running、pid 已死、不在本实例 children 里」的任务当作结束并通知;同进程子代理的 `process.pid` 与父会话相同,`foreignOwner` 判不出来,于是子代理实例在「进程已死、父会话尚未标记」的窗口内抢先回收并发通知——通知经 steer 插进子代理正在进行的回合(aicontest 11-27 判官串扰同款路径;抢先者还会把退出码写成 unknown)。
+- **D23-2 实证**:这是竞态——父会话实例靠子进程 exit 事件在自己下一个 2s 拍点标记,子代理实例只有恰好在该窗口巡检才抢得到,所以表现为偶发事故。E2E 先测父会话巡检相位、再让任务在「子代理下一拍之前约 1s、父会话下一拍之前约 2s」退出,使旧代码下必现:旧代码 3/3 次复现,新代码 0 次。
+- **D23-3 修法**:`isSubagentSessionName(ctx.sessionManager.getSessionName())`——pi-subagents 给每个子会话起名 `<类型>#<agent id 前 8 位十六进制>`(0.23.2 与上游 0.26.3 均如此,`bindExtensions` 之前已设好),顶层会话没有该后缀。子代理会话里的实例只结算自己创建的任务(`reportOwnExits`),不回收、不标孤儿、不做登记表维护;顶层会话行为不变。
+- **D23-4 选型**:会话名后缀而非 RPC 或导入 pi-subagents 内部模块——零依赖、同步可得、两版上游通用;误判方向是安全的(顶层会话被误判为子代理只会少收非自建任务的通知)。已知边界:顶层会话被手工命名成 `#`+8 位十六进制结尾会被当作子代理;顶层会话对其他会话(含已结束的子代理)留下的任务仍会回收并通知——既有行为,本次未动,待用户裁决。
+- **D23-5 守卫**:behavioral `test_factory_notify_scoped_to_creating_session_not_subagent`(双实例共享登记表)+ E2E `lints/tasks_notify_subagent_real_session.py`(真 pi + 真 pi-subagents)+ pattern `lints/task_notify_scoped_in_subagent_sessions.py`。

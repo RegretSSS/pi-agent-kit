@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -167,3 +168,23 @@ def test_factory_notify_steered_during_run_held_during_maintenance(tmp_path) -> 
     assert out["runSentCount"] == 1 and run_id in out["runSentText"] and "code=3" in out["runSentText"]
     assert out["maintenanceSentCount"] == 0
     assert out["flushedSentCount"] == 1 and maintenance_id in out["flushedText"] and "code=4" in out["flushedText"]
+
+
+def test_factory_notify_scoped_to_creating_session_not_subagent(tmp_path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    result = subprocess.run(
+        ["node", "--experimental-strip-types", str(DRIVER), str(home / "reg"), "factory-two-sessions", "{}"],
+        capture_output=True,
+        text=True,
+        cwd=REPO,
+        env=dict(os.environ, HOME=str(home)),
+    )
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    assert out["childSeesParentTask"] is True
+    assert out["recordedExitCode"] == 7
+    assert len(out["parentSent"]) == 1 and out["parentOwnedId"] in out["parentSent"][0] and "code=7" in out["parentSent"][0]
+    assert out["childSent"] == []
+    assert len(out["childOwnSent"]) == 1 and "code=9" in out["childOwnSent"][0]
+    assert out["classifier"] == [True, True, False, False, False, False, False]

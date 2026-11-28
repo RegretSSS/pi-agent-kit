@@ -278,6 +278,53 @@ switch (scenario) {
 		await handlers["session_shutdown"]?.();
 		break;
 	}
+	case "factory-two-sessions": {
+		const { default: factory, isSubagentSessionName } = await import("../extensions/tasks.ts");
+		const { mkdirSync } = await import("node:fs");
+		mkdirSync(root, { recursive: true });
+		const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+		const boot = async (sessionName) => {
+			const tools = {};
+			const handlers = {};
+			const sent = [];
+			const pi = {
+				on: (event, handler) => {
+					handlers[event] = handler;
+				},
+				registerTool: (tool) => {
+					tools[tool.name] = tool;
+				},
+				registerCommand: () => {},
+				sendMessage: (message) => {
+					sent.push(message.content);
+				},
+			};
+			await factory(pi);
+			const ctx = { cwd: root, sessionManager: { getBranch: () => [], getSessionName: () => sessionName }, isIdle: () => true };
+			await handlers["session_start"]({}, ctx);
+			return { tools, handlers, sent, ctx };
+		};
+		const parent = await boot("main session");
+		const child = await boot("general-purpose#1a2b3c4d");
+		const parentOwned = await parent.tools.task_create.execute("p1", { cmd: "sleep 1; exit 7", name: "parent-owned" }, undefined, undefined, parent.ctx);
+		await settle(4500);
+		const viewer = new TaskRegistry();
+		await viewer.ensureLoaded();
+		out.parentOwnedId = parentOwned.details.id;
+		out.parentSent = parent.sent.filter((text) => text.includes(parentOwned.details.id));
+		out.childSent = child.sent.slice();
+		out.recordedExitCode = viewer.get(parentOwned.details.id).exitCode;
+		const childList = await child.tools.task_list.execute("c0", {}, undefined, undefined, child.ctx);
+		out.childSeesParentTask = childList.content[0].text.includes(parentOwned.details.id);
+		child.sent.length = 0;
+		const childOwned = await child.tools.task_create.execute("c1", { cmd: "exit 9", name: "child-owned" }, undefined, undefined, child.ctx);
+		await settle(3500);
+		out.childOwnSent = child.sent.filter((text) => text.includes(childOwned.details.id));
+		out.classifier = ["general-purpose#1a2b3c4d", "Explore#0f9e8d7c", "main session", "report#1234567", "report#123456789", "report#zzzzzzzz", undefined].map((name) => isSubagentSessionName(name));
+		await parent.handlers["session_shutdown"]?.();
+		await child.handlers["session_shutdown"]?.();
+		break;
+	}
 	default:
 		throw new Error(`unknown scenario: ${scenario}`);
 }
