@@ -249,3 +249,12 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D28-2 决定**:仓里不再保存、不再部署、不再测试这个文件,唯一真相源是 node-2 的 hub 仓(`~/workspace/a2a-mailbox`,本机只读)。随文件一起删除的还有只为它存在的三个 lint、一个 driver 与 7 条单测:它们守护的是仓内那套带 `wakeLanded` 落地检测的实现(含 11-18 事故后的 `inj-` claim 幂等化)。对比过 hub 源与部署位:两边都没有那套落地检测与重注机制,而 11-18 的 36 连注事故根因正是「检测不到即重注」——所以没有需要移交的修复;已去函 node-2(103d7cbeb526),它若要跨进程单注入者保护,再把那段整理过去。
 - **D28-3 守卫**:`lints/foreign_owned_extensions_absent.py`——「归外部所有」的扩展文件不得出现在 `extensions/`,清单写在 lint 里(现只有 `a2a-inbox.ts`),自动被 run-lints.sh 发现;反向验证:往 `extensions/` 放一个同名空文件即红。
 - **D28-4 顺带修的测试泄漏**:`tests/test_sync_subagents_kit.py` 的 `run()` 继承了调用方环境里的 `PI_SUBAGENTS_KIT_BRANCH`,带着它跑 gate 时同步脚本的单测会去临时仓库里找一个不存在的分支。现在该测试不再继承这个变量。这是在 pi 1.7.0 上跑 gate 时暴露的假红。
+
+## D29(no-long-sleep.ts 收编入仓:沿用部署位原文件与原取舍,2026-11-29,用户「做到你认为最好就行」)
+
+- **D29-1 来历**:`~/.pi/agent/extensions/no-long-sleep.ts` 于 2026-11-07 14:05 直接落在部署位,从未入仓(`git log --all` 无记录)。原始决策只记在 pi 侧全局记忆桶(`~/.agents/memory/no-long-sleep-in-session.md`):用户令「会话内禁止 sleep 超过 100 秒阻塞自身」,起因是会话用 `sleep 1500`/`2700` 阻塞等批、期间用户消息被卡;需要等待改用 `task_create`(结束自动唤醒)或定时任务。留在仓外的代价:新机装不上、行为没有测试、哪天被误删没人发现。
+- **D29-2 原样收编**:入仓文件与部署位逐字节一致(sha256 相同),零行为差异。归属核实过两处:hub 仓(`~/workspace/a2a-mailbox`)与 kit 仓三个分支都没有同名文件,它不是 `a2a-inbox.ts` 那种外部所有件,也不是同步脚本从 kit 分支拷出来的。
+- **D29-3 沿用原取舍——不做命令位区分**:分隔符枚举追不上 shell 语法,原决策迭代过两轮(`do … sleep`、`then sleep`)仍漏,于是定成「bash 工具是同步阻塞的,`sleep>100` 本身就是阻塞信号,宁误杀不放行」。所以 `echo sleep 999`、`grep "sleep 300" x` 这类读操作也被拦,这是有意为之,不是缺陷;被拦的模型换一种不经过 bash 命令行的写法即可,代价远小于会话被卡几分钟。
+- **D29-4 已知漏网(实测本机 GNU coreutils 8.32)**:原意图是「任何 `sleep N` 折算秒 >100 一律拦」,但正则只认「空白 + 纯十进制数字 + 可选后缀」。实测 sleep 还接受 `1e-3`、`+0.001`、`.001`、`inf`/`infinity`(永久阻塞,实测时靠 `timeout 2` 兜底才截断)、`0x1p-10`、多个参数累加(`sleep 0.001 0.001`),对应 `sleep 1e3`、`sleep +300`、`sleep .5e3`、`sleep inf`、`sleep 90 90` 现版全部放行。补法见 D29-7。
+- **D29-5 守卫**:behavioral `tests/test_no_long_sleep.py`(加载真模块,重放原始失败输入 `sleep 1500`/`2700`、后缀换算、`do`/`then` 嵌套、误杀样例;「尾部长 sleep 被拦后紧接着开头就是长 sleep」两条连发钉住 `g` 正则的 `lastIndex` 重置——不重置时第二条从残留位置开始扫,必然漏);pattern `lints/no_long_sleep.py` 守结构(`tool_call` 注册、限定 bash、阈值走 `SLEEP_LIMIT_SECONDS`、每个带 `g` 的正则使用前重置、拦截提示带 `task_create`);`test_deploy` 的部署集合加入新文件。
+- **D29-6 部署**:部署位已有同内容文件,收编不需要部署动作;此后以仓内为源。只订阅 pi 核心 `tool_call`、不改工具 schema,单文件 `cp` 即生效(新会话自动加载),不需要空档。

@@ -92,6 +92,13 @@
 - 只改显示：不重注册工具、不改 schema、模型可见结果不变；HTML 导出不受损
 - 参数文本入行前清 OSC/CSI/C0（单行渲染的安全前提）
 
+## D29 · no-long-sleep 扩展 `extensions/no-long-sleep.ts`（2026-11-07 立于部署位，2026-11-29 收编入仓）
+
+- 用户令（2026-11-07）：会话内禁止 `sleep` 超过 100 秒阻塞自身；起因是会话用 `sleep 1500`／`2700` 阻塞等批，期间用户消息被卡
+- `tool_call` 钩子：bash 工具的命令里任何 `sleep N`（整数／小数，可带 `s`／`m`／`h`／`d` 后缀）折算秒数 > `SLEEP_LIMIT_SECONDS`（100）即 `block`，提示改用 `task_create`（结束自动唤醒）或定时任务
+- 不做「命令位」语义区分：分隔符枚举追不上 shell 语法（`do … sleep`／`then sleep` 两轮补丁仍漏），bash 工具同步阻塞，`sleep>100` 本身就是阻塞信号——宁误杀（`echo sleep 999` 也拦）不放行
+- 测试面：`tests/no_long_sleep_driver.mjs` 重放原始失败输入（含误杀样例与「先长后短」两条连发，钉住 `g` 正则的 `lastIndex` 重置）；`lints/no_long_sleep.py` 守结构
+
 ## 部署（每件完成即部署+实测，独立 commit）
 
 - desktop：`extensions/*.ts` → `~/.pi/agent/extensions/`；MCP 同步实跑；AGENTS.md 落位

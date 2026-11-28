@@ -1,4 +1,5 @@
 import importlib.util
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -151,3 +152,27 @@ def test_foreign_owned_extension_copy_is_flagged(tmp_path) -> None:
     problems = lint.find_foreign_owned(tmp_path)
     assert len(problems) == 1
     assert problems[0].startswith("a2a-inbox.ts 归 ")
+
+
+class TestNoLongSleep:
+    def test_repo_source_passes(self) -> None:
+        mod = load("no_long_sleep")
+        assert mod.lint(REPO) == []
+
+    def test_missing_file_flagged(self, tmp_path) -> None:
+        mod = load("no_long_sleep")
+        assert "不存在" in mod.lint(tmp_path)[0]
+
+    def test_each_structural_loss_flagged(self, tmp_path) -> None:
+        mod = load("no_long_sleep")
+        source = (REPO / "extensions" / "no-long-sleep.ts").read_text()
+        reset = re.search(r"^\s*\w+\.lastIndex = 0;\s*$", source, re.MULTILINE)
+        broken = tmp_path / "extensions"
+        broken.mkdir()
+        (broken / "no-long-sleep.ts").write_text(
+            source.replace('event.toolName !== "bash"', "false").replace(reset.group(0), "").replace("task_create", "等待")
+        )
+        problems = "\n".join(mod.lint(tmp_path))
+        assert "未限定 toolName==bash" in problems
+        assert "lastIndex" in problems
+        assert "task_create" in problems
