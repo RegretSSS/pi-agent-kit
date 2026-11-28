@@ -831,9 +831,14 @@ async function notifyFinished(tasks: TaskRecord[]): Promise<void> {
 
 function settleOwnExits(): Promise<TaskRecord[]> {
 	if (!settling) {
-		settling = collectOwnExits().finally(() => {
-			settling = null;
-		});
+		settling = collectOwnExits()
+			.then(async (finished) => {
+				await reportOwnExits(finished).catch(() => {});
+				return finished;
+			})
+			.finally(() => {
+				settling = null;
+			});
 	}
 	return settling;
 }
@@ -858,12 +863,9 @@ async function collectOwnExits(): Promise<TaskRecord[]> {
 		pendingNotify.length = 0;
 		pi.sendMessage({ customType: "task-notify", content: merged, display: true }, { triggerTurn: true });
 	}
-	const finished = await settleOwnExits();
-	if (subagentSession) {
-		await reportOwnExits(finished);
-		return;
-	}
-	await reapUnownedAndReport(finished);
+	await settleOwnExits();
+	if (subagentSession) return;
+	await reapUnownedAndReport();
 }
 
 async function reportOwnExits(finished: TaskRecord[]): Promise<void> {
@@ -873,14 +875,14 @@ async function reportOwnExits(finished: TaskRecord[]): Promise<void> {
 	await notifyFinished(finished);
 }
 
-async function reapUnownedAndReport(finished: TaskRecord[]): Promise<void> {
+async function reapUnownedAndReport(): Promise<void> {
 	const reaped = await registry.reapDeadPids(new Set(children.keys()));
 	const orphaned = await registry.livingForeignTasks();
 	for (const task of orphaned) {
 		await registry.markOrphan(task.id);
 	}
 	await registry.shrinkOversizedLogs();
-	await reportOwnExits([...finished, ...reaped]);
+	await reportOwnExits(reaped);
 	if (orphaned.length > 0) {
 		const orphanLines = orphaned.map((task) => `[task:${task.id}] ${task.name} pid=${task.pid} owner=${task.ownerPid}已死,任务仍存活`);
 		deliverNotify(`孤儿任务告警 ${orphanLines.length} 条(父进程已退出,任务仍在跑,请接管或 bg_stop):\n${orphanLines.join("\n")}`);
