@@ -18,15 +18,33 @@ BLOCKED = [
     "echo sleep 999",
     "echo a; echo b; sleep 600",
     "sleep 600",
+    "sleep 90 90",
+    "sleep 30 30 50",
+    "sleep 1e3",
+    "sleep .5e3",
+    "sleep 1E+3",
+    "sleep 2e2s",
+    "sleep +300",
+    "sleep inf",
+    "sleep infinity",
+    "sleep 60 60; echo done",
 ]
 
 ALLOWED = [
     "sleep 100",
     "sleep 99",
     "sleep 0.5",
+    "sleep 30 30",
+    "sleep 1e-3",
+    "sleep +99",
+    "sleep 5.",
+    "sleep 100; echo done",
     "ls -la",
     "make && make test",
     'grep -n "sleep 30" run.sh',
+    "usleep 500",
+    "sleepy 300",
+    "echo sleep info 5",
 ]
 
 
@@ -55,6 +73,13 @@ def test_blocked_call_does_not_poison_the_next_command():
     trailing = events[BLOCKED.index("echo a; echo b; sleep 600")]
     leading = events[BLOCKED.index("sleep 600")]
     assert trailing["blocked"] and leading["blocked"]
+
+
+def test_reason_reports_every_duration_and_the_total():
+    events = {event["command"]: event for event in run_driver()["events"]}
+    assert "90 90（180s）" in events["sleep 90 90"]["reason"]
+    assert "inf（永不返回）" in events["sleep inf"]["reason"]
+    assert "1E+3（1000s）" in events["sleep 1E+3"]["reason"]
 
 
 def test_scopes_to_bash_tool_and_string_command():

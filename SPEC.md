@@ -95,8 +95,9 @@
 ## D29 · no-long-sleep 扩展 `extensions/no-long-sleep.ts`（2026-11-07 立于部署位，2026-11-29 收编入仓）
 
 - 用户令（2026-11-07）：会话内禁止 `sleep` 超过 100 秒阻塞自身；起因是会话用 `sleep 1500`／`2700` 阻塞等批，期间用户消息被卡
-- `tool_call` 钩子：bash 工具的命令里任何 `sleep N`（整数／小数，可带 `s`／`m`／`h`／`d` 后缀）折算秒数 > `SLEEP_LIMIT_SECONDS`（100）即 `block`，提示改用 `task_create`（结束自动唤醒）或定时任务
+- `tool_call` 钩子：bash 工具的命令里任何 `sleep` 调用，其时长参数（GNU sleep 接受的十进制形态：整数／小数／前导 `+`／科学计数／`inf`，可带 `s`／`m`／`h`／`d` 后缀；多个参数求和）折算秒数 > `SLEEP_LIMIT_SECONDS`（100）即 `block`，提示回显参数与合计秒数，并指向 `task_create`（结束自动唤醒）或定时任务
 - 不做「命令位」语义区分：分隔符枚举追不上 shell 语法（`do … sleep`／`then sleep` 两轮补丁仍漏），bash 工具同步阻塞，`sleep>100` 本身就是阻塞信号——宁误杀（`echo sleep 999` 也拦）不放行
+- 不认的形态（接受边界，D29-7）：变量／算术展开给的时长、十六进制浮点、内联解释器里的等待；不同 `sleep` 之间不累加
 - 测试面：`tests/no_long_sleep_driver.mjs` 重放原始失败输入（含误杀样例与「先长后短」两条连发，钉住 `g` 正则的 `lastIndex` 重置）；`lints/no_long_sleep.py` 守结构
 
 ## 部署（每件完成即部署+实测，独立 commit）
