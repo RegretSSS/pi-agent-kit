@@ -1,4 +1,6 @@
 import json
+import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -350,3 +352,34 @@ def test_merged_context_missing_project_bucket_no_throw(tmp_path) -> None:
     assert "本项目 0 条 + 全局 1 条" in out["text"]
     assert "- [global] [reference] g1" in out["text"]
     assert not missing.exists()
+
+
+def drive_tool(tmp_path: Path, steps: list[dict]) -> dict:
+    home = tmp_path / "home"
+    cwd = tmp_path / "w" / "proj"
+    cwd.mkdir(parents=True)
+    home.mkdir()
+    result = subprocess.run(
+        ["node", "--experimental-strip-types", str(DRIVER), str(tmp_path / "scratch"), "tool", json.dumps({"cwd": str(cwd), "steps": steps}, ensure_ascii=False)],
+        capture_output=True,
+        text=True,
+        cwd=REPO,
+        env=dict(os.environ, HOME=str(home)),
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_save_tool_duplicate_reply_lists_hits(tmp_path) -> None:
+    out = drive_tool(tmp_path, [
+        {"name": "deploy-port", "description": "本仓部署端口", "type": "project", "body": "端口 8899"},
+        {"name": "deploy-port-2", "description": "本仓部署端口", "type": "project", "body": "端口 8899"},
+    ])
+    assert out["steps"][0]["text"].startswith("saved deploy-port")
+    reply = out["steps"][1]
+    assert "threw" not in reply, reply
+    assert reply["isError"] is True
+    assert reply["text"].startswith("疑似重复,拒绝新建。已有相近条目:")
+    assert "1. [project] [project] deploy-port — 本仓部署端口" in reply["text"]
+    encoded = re.sub(r"[^a-zA-Z0-9]", "-", str(tmp_path / "w" / "proj"))
+    assert f".agents/memory/projects/{encoded}/deploy-port.md" in reply["text"]

@@ -1,3 +1,4 @@
+import { register } from "node:module";
 import { MemoryStore, ScopedMemory, projectMemoryRoot } from "../extensions/memory.ts";
 
 const [root, scenario, payload] = process.argv.slice(2);
@@ -100,6 +101,24 @@ switch (scenario) {
 			out.hits = hits.map((h) => ({ key: `${h.scope}:${h.entry.name}`, termsHit: h.termsHit }));
 		}
 		mem.close();
+		break;
+	}
+	case "tool": {
+		const p = JSON.parse(payload);
+		register(new URL("./typebox_shim.mjs", import.meta.url));
+		const { default: factory } = await import("../extensions/memory.ts");
+		const tools = {};
+		await factory({ on: () => {}, registerTool: (t) => { tools[t.name] = t; }, registerCommand: () => {} });
+		const ctx = { cwd: p.cwd, hasUI: false, sessionManager: { getBranch: () => [], getSessionFile: () => `${root}/session.jsonl` } };
+		out.steps = [];
+		for (const step of p.steps ?? []) {
+			try {
+				const result = await tools[step.tool ?? "memory_save"].execute("t", step.args ?? step, undefined, undefined, ctx);
+				out.steps.push({ text: result.content[0].text, isError: result.isError ?? false, details: result.details });
+			} catch (error) {
+				out.steps.push({ threw: String(error) });
+			}
+		}
 		break;
 	}
 	default:

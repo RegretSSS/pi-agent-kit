@@ -63,6 +63,12 @@ export type SaveOutcome =
 	| { status: "rejected-lints"; message: string }
 	| { status: "rejected-duplicate"; hits: SearchHit[] };
 
+export type ScopedSaveOutcome = Exclude<SaveOutcome, { status: "rejected-duplicate" }> | { status: "rejected-duplicate"; hits: ScopedHit[] };
+
+export type MemorySaveParams = { name: string; description: string; type: string; body: string; mode?: SaveOptions["mode"]; section?: string; scope?: MemoryScope };
+
+export type MemorySearchParams = { query: string; top_k?: number; scope?: MemoryScope };
+
 export type BodySection = { title: string; content: string };
 
 export function splitSections(body: string): { preamble: string; sections: BodySection[] } {
@@ -474,12 +480,14 @@ export class ScopedMemory {
 		return hits.map((hit) => ({ ...hit, scope, root: store.root }));
 	}
 
-	async save(name: string, description: string, type: string, body: string, options: SaveOptions = {}): Promise<SaveOutcome> {
+	async save(name: string, description: string, type: string, body: string, options: SaveOptions = {}): Promise<ScopedSaveOutcome> {
 		const scope = options.scope ?? "project";
 		if (scope === "global" && type === "project") {
 			return { status: "rejected-lints", message: "全局桶只收跨项目通用知识(user/feedback/reference);这条是项目相关认知——用 scope=project 保存,或它确实是通用判断则改 type 后重试" };
 		}
-		return this.storeFor(scope).save(name, description, type, body, options);
+		const store = this.storeFor(scope);
+		const outcome = await store.save(name, description, type, body, options);
+		return outcome.status === "rejected-duplicate" ? { ...outcome, hits: await this.scopedHits(store, scope, outcome.hits) } : outcome;
 	}
 
 	async search(query: string, topK: number, scope?: MemoryScope): Promise<ScopedHit[]> {
@@ -573,7 +581,8 @@ export default async function (pi: ExtensionAPI) {
 			section: Type.Optional(Type.String({ description: "命名小节(## 标题):存在则替换该节,不存在则尾插;与 mode=append 互斥" })),
 			scope: Type.Optional(StringEnum(["project", "global"] as const, { description: "默认 project(本项目私有);global 仅收跨项目通用知识" })),
 		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
+			const params = rawParams as MemorySaveParams;
 			const outcome = await memory(ctx.cwd).save(params.name, params.description, params.type, params.body, { mode: params.mode, section: params.section, scope: params.scope });
 			if (outcome.status === "rejected-lints") {
 				return { content: [{ type: "text", text: outcome.message }], details: { status: outcome.status }, isError: true };
@@ -606,7 +615,8 @@ export default async function (pi: ExtensionAPI) {
 			top_k: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
 			scope: Type.Optional(StringEnum(["project", "global"] as const, { description: "缺省=两桶混合;project=仅本项目私有记忆,global=仅全局通用记忆" })),
 		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
+			const params = rawParams as MemorySearchParams;
 			const hits = await memory(ctx.cwd).search(params.query, params.top_k ?? 5, params.scope);
 			if (hits.length === 0) {
 				return { content: [{ type: "text", text: params.scope ? `无命中(scope=${params.scope})` : "无命中(两桶)" }], details: { hits: [] } };
@@ -631,7 +641,8 @@ export default async function (pi: ExtensionAPI) {
 		try {
 			const branch = ctx.sessionManager.getBranch();
 			for (let i = branch.length - 1; i >= 0 && tailAssistant.length === 0; i--) {
-				const message = branch[i]?.message;
+				const entry = branch[i];
+				const message = entry?.type === "message" ? entry.message : undefined;
 				if (message?.role !== "assistant") continue;
 				const content = message.content;
 				tailAssistant = typeof content === "string" ? content : (Array.isArray(content) ? content.filter((block) => block?.type === "text").map((block) => (block as { text?: string }).text ?? "").join(" ") : "");
@@ -676,7 +687,7 @@ export default async function (pi: ExtensionAPI) {
 		toolErrors = [];
 		tokensIn = 0;
 		tokensOut = 0;
-		await scoped.global.appendCandidateRecord(record);
+		await scoped?.global.appendCandidateRecord(record);
 	});
 
 	pi.on("session_compact", async () => {
