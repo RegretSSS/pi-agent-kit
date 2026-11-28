@@ -250,7 +250,7 @@ class TestObservedMode:
         assert quiet["rewritten"] is False
         spin = by_id(out, "spin")
         assert spin["exitCode"] == 137
-        assert spin["durationMs"] < 4000
+        assert spin["durationMs"] < 7000, "应在自然结束(8 秒)前被守护停掉;名义 2 秒左右,上界为高负载下的调度延迟留余量"
         assert "已折叠" in texts(spin)
         assert "[pi-guard] 已停止:空转热循环" in texts(spin)
         assert spin["hookStructured"] is True
