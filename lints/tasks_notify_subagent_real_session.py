@@ -138,7 +138,7 @@ def run_session(pi: str, package_root: Path, subagents: Path, server: ThreadingH
     home = workdir / "home"
     agent_dir = workdir / "agent"
     scratch = workdir / "scratch"
-    for path in (home, agent_dir / "extensions", agent_dir / "node_modules", scratch):
+    for path in (home, agent_dir / "extensions", agent_dir / "node_modules", scratch, scratch / "tmp"):
         path.mkdir(parents=True)
     shutil.copyfile(ROOT / "extensions" / "tasks.ts", agent_dir / "extensions" / "tasks.ts")
     os.symlink(package_root / "node_modules" / "typebox", agent_dir / "node_modules" / "typebox")
@@ -155,7 +155,7 @@ def run_session(pi: str, package_root: Path, subagents: Path, server: ThreadingH
         text=True,
         cwd=scratch,
         timeout=180,
-        env={**os.environ, "HOME": str(home), "PI_CODING_AGENT_DIR": str(agent_dir)},
+        env={**os.environ, "HOME": str(home), "PI_CODING_AGENT_DIR": str(agent_dir), "TMPDIR": str(scratch / "tmp")},
     )
     if result.returncode != 0:
         raise RuntimeError(f"pi 退出码 {result.returncode}: {result.stderr[-600:]}")

@@ -62,7 +62,7 @@ def tool_names(request: dict) -> list[str]:
 def active_tools(pi: str, server: ThreadingHTTPServer) -> list[str]:
     with tempfile.TemporaryDirectory(prefix="kit-quiet-tui-covers-") as tmp:
         home, agent_dir, scratch = (Path(tmp) / name for name in ("home", "agent", "scratch"))
-        for path in (home, agent_dir, scratch):
+        for path in (home, agent_dir, scratch, scratch / "tmp"):
             path.mkdir(parents=True)
         (agent_dir / "models.json").write_text(json.dumps({"providers": {PROVIDER: {"baseUrl": f"http://127.0.0.1:{server.server_address[1]}/v1", "api": "openai-completions", "apiKey": "scripted", "models": [{"id": "scripted"}]}}}))
         (agent_dir / "settings.json").write_text(json.dumps({"defaultTools": ACTIVATED_BUILTINS}))
@@ -73,7 +73,7 @@ def active_tools(pi: str, server: ThreadingHTTPServer) -> list[str]:
             text=True,
             cwd=scratch,
             timeout=120,
-            env={**os.environ, "HOME": str(home), "PI_CODING_AGENT_DIR": str(agent_dir)},
+            env={**os.environ, "HOME": str(home), "PI_CODING_AGENT_DIR": str(agent_dir), "TMPDIR": str(scratch / "tmp")},
         )
     if result.returncode != 0:
         raise RuntimeError(f"pi 退出码 {result.returncode}: {result.stderr[-600:]}")

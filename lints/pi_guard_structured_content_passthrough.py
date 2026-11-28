@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import json
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -19,14 +21,16 @@ def lint() -> list[str]:
         "config": {"systemdRun": "/nonexistent/systemd-run", "reportMinSec": 1},
         "calls": [{"id": "annotated", "command": "sleep 1.2; echo done"}],
     }
-    result = subprocess.run(
-        ["node", "--experimental-strip-types", "--no-warnings", str(DRIVER), "run"],
-        input=json.dumps(spec),
-        capture_output=True,
-        text=True,
-        cwd=ROOT,
-        timeout=120,
-    )
+    with tempfile.TemporaryDirectory(prefix="pi-guard-passthrough-") as scratch:
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--no-warnings", str(DRIVER), "run"],
+            input=json.dumps(spec),
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            timeout=120,
+            env={**os.environ, "TMPDIR": scratch},
+        )
     if result.returncode != 0:
         raise RuntimeError(result.stderr[-800:])
     call = json.loads(result.stdout)["results"][0]

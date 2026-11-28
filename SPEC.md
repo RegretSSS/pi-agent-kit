@@ -67,6 +67,7 @@
 ## D21 · pi-guard 扩展 `extensions/pi-guard.ts`（bash 命令隔离 + 失控判型，aicontest 工单 b61b1a54a780）
 
 - 范围：bash 工具的每一次调用（含 codemode 嵌套调用与子 agent 会话——同走 `tool_call` 钩子）；落盘后下次会话启动生效，不打断在跑会话
+- 空转热循环被停后，它的输出转存件（pi 命令工具对超过 50KB 的输出全量写到 `tmpdir()/pi-bash-*.log`，无上限、从不清理）即删，回执写明（D33）；没被停的命令转存件不动
 - 事件顺序（以 pi 1.5.2 的 agent-loop 为准）：`tool_execution_start` → `tool_call` → 执行 → `tool_result` → `tool_execution_end`。改写命令与登记跟踪必须同在 `tool_call` 里；`tool_execution_start` 早于 `tool_call`，不能依赖它
 - 隔离底座：cgroup v2。`tool_call` 钩子把命令原地改写为 `exec systemd-run --user --scope … -- env -u INVOCATION_ID SHLVL=$((SHLVL-1)) /bin/bash -c <原命令>`，每条命令一个 scope（unit 名 `pi-guard-<pid>-<实例随机段>-<序号>`，同进程多实例不撞名），全部落在 `piguard.slice` 下；PID/进程组/cwd/env/退出码与未包装时一致
 - 机器存活线（不看类型）：slice 聚合 `memory.max = ⌊MemTotal×(1−reserveFrac)⌋`（默认 75%，本机约 11.7GB）+ `memory.swap.max=0`；scope 启动后写 `memory.oom.group=1`，触顶时内核挑最大进程所在的**那条命令整组终止**，同 slice 的其他命令不受影响。slice 变空时 systemd 会把限额重置回 `max`，故有命令在跟踪时每个采样节拍校验并补写

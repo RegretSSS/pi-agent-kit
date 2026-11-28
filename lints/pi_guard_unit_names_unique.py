@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -33,14 +34,16 @@ def unavailable() -> str | None:
 
 
 def drive(spec: dict) -> dict:
-    result = subprocess.run(
-        ["node", "--experimental-strip-types", "--no-warnings", str(DRIVER), "run"],
-        input=json.dumps(spec),
-        capture_output=True,
-        text=True,
-        cwd=ROOT,
-        timeout=180,
-    )
+    with tempfile.TemporaryDirectory(prefix="pi-guard-units-") as scratch:
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--no-warnings", str(DRIVER), "run"],
+            input=json.dumps(spec),
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            timeout=180,
+            env={**os.environ, "TMPDIR": scratch},
+        )
     if result.returncode != 0:
         raise RuntimeError(result.stderr[-2000:])
     return json.loads(result.stdout)

@@ -100,15 +100,16 @@ def limit_probe(slice_dir: Path) -> str:
 
 
 def hot_loop(seconds: int) -> str:
-    return "python3 - <<'EOF' 2>&1\nimport sys, time\nend = time.time() + %d\nwhile time.time() < end:\n    sys.stdout.write(%r + \"\\n\")\nEOF" % (seconds, LINE)
+    return "python3 - <<'EOF' 2>&1\nimport sys, time\nend = time.time() + %d\nblock = (%r + \"\\n\") * 100\nwhile time.time() < end:\n    sys.stdout.write(block)\n    time.sleep(0.005)\nEOF" % (seconds, LINE)
 
 
 def run_session(pi: str, server: ThreadingHTTPServer, config: dict, workdir: Path) -> tuple[list[dict], str]:
     agent_dir = workdir / "agent"
     log_dir = workdir / "log"
+    spill_dir = workdir / "tmp"
     config_file = workdir / "pi-guard.json"
-    agent_dir.mkdir()
-    log_dir.mkdir()
+    for path in (agent_dir, log_dir, spill_dir):
+        path.mkdir()
     (agent_dir / "models.json").write_text(
         json.dumps({"providers": {PROVIDER: {"baseUrl": f"http://127.0.0.1:{server.server_address[1]}/v1", "api": "openai-completions", "apiKey": "scripted", "models": [{"id": "scripted"}]}}})
     )
@@ -123,7 +124,7 @@ def run_session(pi: str, server: ThreadingHTTPServer, config: dict, workdir: Pat
         text=True,
         cwd=workdir,
         timeout=150,
-        env={**os.environ, "PI_CODING_AGENT_DIR": str(agent_dir), "PI_GUARD_CONFIG": str(config_file), "PI_GUARD_LOG_DIR": str(log_dir)},
+        env={**os.environ, "PI_CODING_AGENT_DIR": str(agent_dir), "PI_GUARD_CONFIG": str(config_file), "PI_GUARD_LOG_DIR": str(log_dir), "TMPDIR": str(spill_dir)},
     )
     if result.returncode != 0:
         raise RuntimeError(f"pi 退出码 {result.returncode}: {result.stderr[-600:]}")
@@ -135,7 +136,7 @@ def run_session(pi: str, server: ThreadingHTTPServer, config: dict, workdir: Pat
             events.append(json.loads(line))
         except json.JSONDecodeError:
             pass
-    return events, result.stderr
+    return events, result.stderr, sorted(path.name for path in spill_dir.glob("pi-*.log"))
 
 
 def text_of(result: dict) -> str:
@@ -159,7 +160,7 @@ def lint(pi: str) -> list[str]:
         try:
             with tempfile.TemporaryDirectory(prefix="pi-guard-real-session-") as tmp:
                 config = {"slice": slice_name, "sliceMaxBytes": limit, "spinWindowSec": 3, "tickMs": 50, "rateWindowMs": 500, "reportMinSec": 0}
-                events, stderr = run_session(pi, server, config, Path(tmp))
+                events, stderr, leftovers = run_session(pi, server, config, Path(tmp))
                 log_file = Path(tmp) / "log" / "log.jsonl"
                 logged = [json.loads(line) for line in log_file.read_text().splitlines() if line.strip()] if log_file.exists() else []
         finally:
@@ -169,6 +170,8 @@ def lint(pi: str) -> list[str]:
         subprocess.run(["systemctl", "--user", "stop", slice_name], capture_output=True)
     if re.search(r"(extension|pi-guard)[^\n]*(error|failed)", stderr, re.IGNORECASE):
         problems.append(f"真实会话里扩展报错: {stderr.strip()[-400:]}")
+    if leftovers:
+        problems.append(f"会话结束后临时目录里留下了输出转存件: {leftovers}")
     ends = [event for event in events if event.get("type") == "tool_execution_end"]
     if len(ends) != 2:
         problems.append(f"脚本化会话应执行两条命令,实际 {len(ends)} 条: {stderr.strip()[-300:]}")
@@ -196,6 +199,9 @@ def lint(pi: str) -> list[str]:
         problems.append(f"真实会话里空转热循环未被停止或未折叠回执: exit={exit_code_of(spin)}")
     if ends[1].get("durationMs", 0) > 9500:
         problems.append(f"真实会话里空转判定过慢: {ends[1].get('durationMs')}ms")
+    spilled = re.search(r"转存件\((\d+)MB", spin_text)
+    if spilled is None or int(spilled.group(1)) < 1:
+        problems.append(f"被停的热循环留下的转存件没有被删除,回执也没说明: {spin_text[-300:]!r}")
     if any(line.get("mode") != "contained" or not line.get("unit", "").startswith("pi-guard-") for line in logged):
         problems.append(f"日志未记录 contained 模式与 unit: {logged}")
     if not any(line.get("verdict") == "normal" and line.get("durationMs", 0) >= 2900 for line in logged):

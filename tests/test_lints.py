@@ -259,3 +259,19 @@ class TestExtensionTypesCheck:
         problems = mod.check(tmp_path)
         assert problems and all("bad.ts" in line for line in problems), problems
         assert any("ToolRenderResultOptions" in line for line in problems), problems
+
+
+class TestRealSessionTmpdirIsolated:
+    def test_repo_sources_pass(self) -> None:
+        mod = load("real_session_tmpdir_isolated")
+        assert mod.unisolated(REPO) == []
+
+    def test_each_starting_point_needs_tmpdir(self, tmp_path) -> None:
+        mod = load("real_session_tmpdir_isolated")
+        (tmp_path / "lints").mkdir()
+        (tmp_path / "lints" / "a.py").write_text('result = subprocess.run([pi], env={**os.environ, "PI_CODING_AGENT_DIR": str(agent)})\n')
+        (tmp_path / "lints" / "b.py").write_text('DRIVER = REPO / "tests" / "pi_guard_driver.mjs"\nsubprocess.run([DRIVER])\n')
+        (tmp_path / "lints" / "c.py").write_text('subprocess.run([pi], env={**os.environ, "TMPDIR": scratch})\n')
+        (tmp_path / "lints" / "d.py").write_text('DRIVER = REPO / "tests" / "pi_guard_driver.mjs"\nsource = DRIVER.read_text()\n')
+        problems = mod.unisolated(tmp_path)
+        assert [problem.split(" ")[0] for problem in problems] == ["lints/a.py", "lints/b.py"]

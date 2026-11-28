@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -33,7 +34,7 @@ def unavailable() -> str | None:
     return None
 
 
-def drive(spec: dict) -> dict:
+def drive(spec: dict, scratch: Path) -> dict:
     result = subprocess.run(
         ["node", "--experimental-strip-types", "--no-warnings", str(DRIVER), "run"],
         input=json.dumps(spec),
@@ -41,6 +42,7 @@ def drive(spec: dict) -> dict:
         text=True,
         cwd=ROOT,
         timeout=180,
+        env={**os.environ, "TMPDIR": str(scratch)},
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr[-2000:])
@@ -48,11 +50,11 @@ def drive(spec: dict) -> dict:
 
 
 def hot_loop(seconds: int) -> str:
-    return "python3 - <<'EOF' 2>&1\nimport sys, time\nend = time.time() + %d\nwhile time.time() < end:\n    sys.stdout.write(%r + \"\\n\")\nEOF" % (seconds, LINE)
+    return "python3 - <<'EOF' 2>&1\nimport sys, time\nend = time.time() + %d\nblock = (%r + \"\\n\") * 100\nwhile time.time() < end:\n    sys.stdout.write(block)\n    time.sleep(0.005)\nEOF" % (seconds, LINE)
 
 
 def reading_loop(seconds: int) -> str:
-    return "python3 - <<'EOF' 2>&1\nimport os, sys, time\nend = time.time() + %d\nfd = os.open('/etc/services', os.O_RDONLY)\nwhile time.time() < end:\n    os.pread(fd, 4096, 0)\n    sys.stdout.write(%r + \"\\n\")\nEOF" % (seconds, LINE)
+    return "python3 - <<'EOF' 2>&1\nimport os, sys, time\nend = time.time() + %d\nblock = (%r + \"\\n\") * 100\nfd = os.open('/etc/services', os.O_RDONLY)\nwhile time.time() < end:\n    os.pread(fd, 4096, 0)\n    sys.stdout.write(block)\n    time.sleep(0.005)\nEOF" % (seconds, LINE)
 
 
 def grower() -> str:
@@ -72,6 +74,11 @@ def texts(result: dict) -> str:
 
 
 def lint() -> list[str]:
+    with tempfile.TemporaryDirectory(prefix="pi-guard-e2e-") as scratch:
+        return check(Path(scratch))
+
+
+def check(scratch: Path) -> list[str]:
     problems = []
     tag = os.getpid()
     small = f"piguardtest{tag}a.slice"
@@ -90,7 +97,8 @@ def lint() -> list[str]:
                 [{"id": "runaway", "command": grower()}, {"id": "neighbor", "command": "sleep 3; echo neighbor-alive"}],
                 {"id": "linger", "command": "sleep 1.5"},
             ],
-        }
+        },
+        scratch,
     )
     if not (first["status"] or "").startswith("pi-guard:cgroup 隔离"):
         problems.append(f"E2E 未进入 cgroup 隔离模式: {first['status']}")
@@ -132,13 +140,18 @@ def lint() -> list[str]:
                     {"id": "bounded", "command": "timeout 60 " + hot_loop(10)},
                 ]
             ],
-        }
+        },
+        scratch,
     )
     spin = by_id(second, "spin")
     if spin["exitCode"] != 137 or "[pi-guard] 已停止:空转热循环" not in texts(spin) or "已折叠" not in texts(spin):
         problems.append(f"空转热循环未被停止或未折叠回执: exit={spin['exitCode']}")
     if spin["durationMs"] > 9500:
         problems.append(f"空转判定过慢: {spin['durationMs']}ms")
+    if spin["spill"] is None or spin["spillExists"] or "转存件" not in texts(spin) or "已删除" not in texts(spin):
+        problems.append(f"被停的热循环留下的转存件没有被删除,回执也没说明: spill={spin['spill']} exists={spin['spillExists']}")
+    if any(by_id(second, call_id)["spillExists"] is not True for call_id in ("reads", "bounded")):
+        problems.append("没被停的命令的转存件应原样保留")
     for call_id in ("reads", "bounded"):
         result = by_id(second, call_id)
         if result["exitCode"] != 0 or "已停止" in texts(result):

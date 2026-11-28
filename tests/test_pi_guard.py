@@ -1,5 +1,7 @@
 import json
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -12,24 +14,26 @@ OBSERVED = {"systemdRun": "/nonexistent/systemd-run", "tickMs": 50, "rateWindowM
 
 
 def drive(mode: str, spec: dict | None = None) -> dict:
-    result = subprocess.run(
-        ["node", "--experimental-strip-types", "--no-warnings", str(DRIVER), mode],
-        input=json.dumps(spec or {}),
-        capture_output=True,
-        text=True,
-        cwd=REPO,
-        timeout=90,
-    )
+    with tempfile.TemporaryDirectory(prefix="pi-guard-test-") as scratch:
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--no-warnings", str(DRIVER), mode],
+            input=json.dumps(spec or {}),
+            capture_output=True,
+            text=True,
+            cwd=REPO,
+            timeout=90,
+            env={**os.environ, "TMPDIR": scratch},
+        )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 
 
 def hot_loop(seconds: int) -> str:
-    return "python3 - <<'EOF' 2>&1\nimport sys, time\nend = time.time() + %d\nwhile time.time() < end:\n    sys.stdout.write(%r + \"\\n\")\nEOF" % (seconds, LINE)
+    return "python3 - <<'EOF' 2>&1\nimport sys, time\nend = time.time() + %d\nblock = (%r + \"\\n\") * 100\nwhile time.time() < end:\n    sys.stdout.write(block)\n    time.sleep(0.005)\nEOF" % (seconds, LINE)
 
 
 def reading_loop(seconds: int) -> str:
-    return "python3 - <<'EOF' 2>&1\nimport os, sys, time\nend = time.time() + %d\nfd = os.open('/etc/services', os.O_RDONLY)\nwhile time.time() < end:\n    os.pread(fd, 4096, 0)\n    sys.stdout.write(%r + \"\\n\")\nEOF" % (seconds, LINE)
+    return "python3 - <<'EOF' 2>&1\nimport os, sys, time\nend = time.time() + %d\nblock = (%r + \"\\n\") * 100\nfd = os.open('/etc/services', os.O_RDONLY)\nwhile time.time() < end:\n    os.pread(fd, 4096, 0)\n    sys.stdout.write(block)\n    time.sleep(0.005)\nEOF" % (seconds, LINE)
 
 
 def grower() -> str:
@@ -172,6 +176,12 @@ class TestVerdictsAndReceipts:
         assert fold["repetitive"].endswith("Command exited with code 137")
         assert len(fold["repetitive"]) < 400
         assert fold["diverse"] is None
+
+    def test_only_the_bash_spill_file_is_targeted_for_removal(self, unit: dict) -> None:
+        spill = unit["spill"]
+        assert spill["paths"] == ["/tmp/pi-bash-0123456789abcdef.log", None, None, "/etc/pi-bash-0123456789abcdef.log", None, None]
+        assert "转存件(6MB" in spill["spinNote"] and "已删除" in spill["spinNote"]
+        assert "转存件" not in unit["annotation"]["spin"]
 
     def test_logging_predicate(self, unit: dict) -> None:
         assert unit["shouldLog"] == [False, True, True, True]

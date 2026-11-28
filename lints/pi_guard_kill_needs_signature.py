@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import json
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -10,14 +12,16 @@ DRIVER = ROOT / "tests" / "pi_guard_driver.mjs"
 
 
 def unit() -> dict:
-    result = subprocess.run(
-        ["node", "--experimental-strip-types", "--no-warnings", str(DRIVER), "unit"],
-        input="{}",
-        capture_output=True,
-        text=True,
-        cwd=ROOT,
-        timeout=120,
-    )
+    with tempfile.TemporaryDirectory(prefix="pi-guard-signature-") as scratch:
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "--no-warnings", str(DRIVER), "unit"],
+            input="{}",
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            timeout=120,
+            env={**os.environ, "TMPDIR": scratch},
+        )
     if result.returncode != 0:
         raise RuntimeError(result.stderr[-800:])
     return json.loads(result.stdout)

@@ -287,3 +287,12 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D32-4 踩坑**:①守护 lint 不能加 `--no-extensions`——它连内建扩展一起关(codemode、grep、find、ls、powershell 都是内建扩展),名单只剩 bash／edit／read／write;隔离 HOME 本来就没有用户扩展与包,不加即可。②pi 的默认集合只有 bash／edit／read／write;grep／find／ls／powershell／codemode 都要 `+` 才激活——用户 `defaultTools: ["+codemode"]` 的会话实际是五个内建工具。lint 的 `ACTIVATED_BUILTINS` 写全开,覆盖九个。③HTML 导出里脚本代码属于调用头(单行摘要),结果区只有嵌套调用与输出——断言别写成「展开态含代码」。
 - **D32-5 没做的**:①`details.fullOutputPath`(输出被截断时存全文的临时文件)折叠态不另起一行——与其它工具一致(输出靠展开),展开态 pi 原渲染器会给;②pi 新增「不默认激活」的内建工具时守护 lint 发现不了(只能发现默认集合的变化),要在 `ACTIVATED_BUILTINS` 登记;③折叠态不启动 pi 的计时器(`startToolTimer`)——没有 Elapsed 实时计时,与 bash 折叠一致,展开时才启动。
 - **D32-6 部署**:单文件 `cp extensions/quiet-tui.ts ~/.pi/agent/extensions/quiet-tui.ts`;不改 schema。在跑的会话要 `/reload` 或重启才换(不替用户重启);回退 = `git revert` 本提交后重新 cp + reload。
+
+## D33(命令输出转存件一天吃掉 29G:pi-guard 停掉热循环后删转存件、测试的临时目录隔离,2026-11-29,aicontest 来信 cee755d481d1)
+
+- **D33-1 事故**:aicontest 发现 `/tmp/pi-bash-*.log` 24 小时堆了 97 个、29G,全部出自本仓的失控防护测试,它已删掉。核对:pi 1.7.0 的命令工具在输出超过 50KB／2000 行后,由 `OutputAccumulator` 把**全部**输出流式写进 `tmpdir()/pi-bash-<16 位 hex>.log`——没有上限,全仓没有任何清理(设计意图是给模型留全文)。本仓起真实会话／真命令工具的测试里,`hot_loop`／`reading_loop` 夹具满速刷同一行(实测 ~230MB/s):每次 gate 落 4 个文件(`pi_guard_real_session` 1 个、`pi_guard_e2e_containment` 的 spin／reads／bounded 3 个),单文件 95–517MB,没人清。`tests/test_pi_guard.py` 用的是假命令工具,不落盘。
+- **D33-2 工具侧(pi-guard)**:停掉空转热循环后顺手删掉它的输出转存件,回执写明「完整输出转存件(NMB,只有这一行的重复)已删除」——被停的热循环全文只有同一行的重复,折叠后的回执已带证据,全文没有保留价值。只对 `spin` 裁决做,只删 basename 形如 `pi-bash-<16 位 hex>.log` 的路径(`spillPathOf`);没被停的命令(带 timeout 的、读输入的)转存件原样保留。变异验证:去掉删除动作,两条真实会话 lint 都红。
+- **D33-3 测试侧**:①凡起 pi 子进程或 pi-guard 驱动的测试／lint,子进程的 `TMPDIR` 指向测试自己的临时目录,跑完随目录删除——pi 的转存、jiti 编译缓存、驱动的 home 目录都落在里面,共享的 `/tmp` 不再留东西。新 pattern lint `real_session_tmpdir_isolated` 守这条(文件含 `PI_CODING_AGENT_DIR` 或 `pi_guard_driver.mjs` 且调用 subprocess → 必须有 `"TMPDIR"`);它一落地就抓出四个我漏数的文件。②刷屏夹具降速:每批 100 行后 sleep 5ms,输出率 ~2MB/s——仍是热循环判定阈值(100KB/s)的 20 倍,写盘量降约 110 倍(每次 gate 从 ~1.3GB 降到几十 MB,且不再遗留)。③顺手清掉 `/tmp` 下历史遗留的 613 个 `pi-guard-driver-*`(11MB,驱动每次运行留下的 home 目录)。
+- **D33-4 没做的**:①转存上限(只留头尾若干 MB)在 `OutputAccumulator` 里,是 pi 上游的事;扩展层只能 monkey-patch 内部模块,不做,建议向上游提。②会话结束时清掉本会话的全部转存件——改变上游语义(TUI 里的 `Full output: …` 路径失效、事后看不了全文)、被杀的会话清不了、也超出 pi-guard「失控防护」的职责;前两项做完后日常遗留的量级可控(只有超过 50KB 的输出才转存),不做。③热循环判定窗口(默认 60s)内已写入的转存:被停即删,瞬时占用取决于输出率,不另限速。
+- **D33-5 踩坑**:断言「临时目录为空」太宽——pi 把 jiti 编译缓存也放在 `tmpdir()/jiti`,只看 `pi-*.log`;规则只按「含触发词」判定会误伤只读驱动源码的 lint,要加「且调用 subprocess」。
+- **D33-6 部署**:`cp extensions/pi-guard.ts ~/.pi/agent/extensions/`;不改 schema;在跑的会话 reload 才换,新会话自动生效。

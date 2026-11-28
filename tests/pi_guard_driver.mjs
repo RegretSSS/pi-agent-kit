@@ -272,6 +272,15 @@ async function unit() {
 		slow: guard.isWrapFailure(wrapFailureText, true, 1500, false),
 		scopeSeen: guard.isWrapFailure(wrapFailureText, true, 20, true),
 	};
+	out.spill = {
+		paths: [
+			"/tmp/pi-bash-0123456789abcdef.log",
+			"/tmp/other-0123456789abcdef.log",
+			"/tmp/pi-bash-nothex.log",
+			"/etc/pi-bash-0123456789abcdef.log",
+		].map((path) => guard.spillPathOf({ fullOutputPath: path })).concat([guard.spillPathOf(undefined), guard.spillPathOf({ fullOutputPath: 7 })]),
+		spinNote: guard.annotationFor({ ...killedSpin, spillBytes: 6 * MB }, oomConfig, 65_000, false),
+	};
 	out.annotation = {
 		spin: guard.annotationFor(killedSpin, oomConfig, 65_000, false),
 		accumulate: guard.annotationFor(killedCeiling, oomConfig, 9000, false),
@@ -414,6 +423,7 @@ async function runCall(handlers, ctx, tool, call) {
 	const isError = hook?.isError ?? event.isError;
 	const durationMs = Date.now() - started;
 	await handlers.tool_execution_end?.({ type: "tool_execution_end", toolName: "bash", toolCallId: call.id, result: { ...result, content }, isError, durationMs }, ctx);
+	const spill = typeof result.details?.fullOutputPath === "string" ? result.details.fullOutputPath : null;
 	return {
 		id: call.id,
 		rewritten: input.command !== original,
@@ -423,6 +433,8 @@ async function runCall(handlers, ctx, tool, call) {
 		hookStructured: hook?.structuredContent === undefined ? null : JSON.stringify(hook.structuredContent) === JSON.stringify(result.structuredContent),
 		content: content.filter((part) => part.type === "text").map((part) => part.text),
 		durationMs,
+		spill,
+		spillExists: spill === null ? null : fs.existsSync(spill),
 	};
 }
 

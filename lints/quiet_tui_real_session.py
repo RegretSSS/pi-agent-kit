@@ -73,7 +73,7 @@ class ScriptedModel(BaseHTTPRequestHandler):
 
 def run_session(pi: str, package_root: Path, server: ThreadingHTTPServer, workdir: Path, quiet: Path | None) -> str:
     home, agent_dir, ext_dir, scratch = (workdir / name for name in ("home", "agent", "ext", "scratch"))
-    for path in (home, agent_dir, ext_dir / "node_modules", scratch):
+    for path in (home, agent_dir, ext_dir / "node_modules", scratch, scratch / "tmp"):
         path.mkdir(parents=True)
     os.symlink(package_root / "node_modules" / "typebox", ext_dir / "node_modules" / "typebox")
     if quiet is not None:
@@ -87,7 +87,7 @@ def run_session(pi: str, package_root: Path, server: ThreadingHTTPServer, workdi
         text=True,
         cwd=scratch,
         timeout=120,
-        env={**os.environ, "HOME": str(home), "PI_CODING_AGENT_DIR": str(agent_dir)},
+        env={**os.environ, "HOME": str(home), "PI_CODING_AGENT_DIR": str(agent_dir), "TMPDIR": str(scratch / "tmp")},
     )
     if result.returncode != 0:
         raise RuntimeError(f"pi 退出码 {result.returncode}: {result.stderr[-600:]}")
