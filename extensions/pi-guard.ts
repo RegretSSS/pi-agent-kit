@@ -854,8 +854,8 @@ function readText(path: string): string | null {
 function bootTimeMs(): number {
 	if (bootMs !== null) return bootMs;
 	const stat = readText(`${PROC_ROOT}/stat`);
-	const at = stat === null ? -1 : stat.indexOf("\nbtime ");
-	bootMs = at < 0 ? -1 : Number(stat.slice(at + 7, stat.indexOf("\n", at + 7))) * 1000;
+	const at = stat?.indexOf("\nbtime ") ?? -1;
+	bootMs = stat === null || at < 0 ? -1 : Number(stat.slice(at + 7, stat.indexOf("\n", at + 7))) * 1000;
 	return bootMs;
 }
 

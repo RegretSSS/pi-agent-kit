@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import type { ExtensionAPI, ToolRenderers } from "@earendil-works/pi-coding-agent";
+import type { Component } from "@earendil-works/pi-tui";
 
 export const BUILTIN_TOOLS = new Set(["bash", "powershell", "read", "edit", "write", "grep", "find", "ls"]);
 export const MCP_PREFIX = "mcp__";
@@ -20,7 +21,6 @@ export class DelegateToDefault extends Error {
 
 type RenderCall = NonNullable<ToolRenderers["renderCall"]>;
 export type RenderContext = Parameters<RenderCall>[2];
-type Component = { render(width: number): string[]; invalidate(): void };
 type ThemeLike = { fg(color: string, text: string): string; bold(text: string): string };
 type Tail = { truncateToWidth(text: string, maxWidth: number, ellipsis?: string): string };
 type ResultLike = { content: Array<{ type: string; text?: string }> };
