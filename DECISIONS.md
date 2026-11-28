@@ -306,3 +306,18 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D34-5 守卫**:behavioral——`test_pending_beyond_forty_settles_on_commit_and_is_reported`、`test_done_counter_counts_the_settled_ones`、`test_settled_counters_survive_restart_and_default_on_old_entries`、`test_clear_resets_settled_counters`、`test_handoff_notes_flood_renders_bounded`(300 条长文重放);变异验证:去掉 pending 沉降 4 条红、去掉累计完成数 1 条红。pattern lint `todo_single_in_progress_anchor` 加 pending 沉降的结构断言,`todo_output_bounded` 加每行截断断言。driver 的大夹具改走 stdin(命令行参数有上限)。
 - **D34-6 生效与影响**:description 变了——在跑的 pi 实例要**重启**才对模型生效(`/reload` 不刷新工具 schema);aicontest 现有的 240 条 pending 在下一次任何写操作时沉降到 40 条,最新的任务单都还在;更早的全史仍在会话 jsonl 的 `todo-state` 条目里。
 - **D34-7 没做的**:①不改 aicontest 侧的工作流(把任务单写进 todo 是它那个会话自己的策略,它的 AGENTS.md 里没有这条规则)——只告知;②list 排序保持「非 pending 优先、pending 按加入顺序」;③沉降阈值 40 与 list 上限对齐,不做配置项。
+
+## D35(todo 状态改逐操作增量落盘:不再每次操作整表重写,2026-11-29,用户「每做一次todo操作都整张重写才是大问题吧?todo工具你好好的认真的想想怎么优化稳妥」)
+
+- **D35-1 起因与实测**:用户问「sessions怎么会这么大」,拆 `~/.pi/agent/sessions`:4914 个文件 1.81G(此前报的 1.9G 是十进制 GB),99.4% 在 aicontest 的项目目录。它连用 22.5 天的那个会话单文件 452MB,其中 `todo-state` 全量快照 1591 条占 280MB(62%),todo 工具结果里的清单副本另占 28MB——每次操作把整张清单再写一遍,清单涨到 245 条、48.8 万字符后每次 0.2–0.8MB;11-28 一天写 75MB(todo 占 58MB),11-29 凌晨 4 小时 27MB(todo 占 23MB)。其余约 1.35G 是 4823 个子代理会话文件(每派一个 agent 一个文件,平均约 290KB)。没有任何文件超过 30 天,「按 30 天清」清不掉一个字节;那个 452MB 的工作会话名字也是 `general-purpose#…`(最初作为子代理被拉起),按名字清会把它一起清掉。**用户裁定:会话历史不清,先留着。**
+- **D35-2 根因**:自 D21 起持久化是「每次写操作追加一条全量快照」`todo-state {todos,nextId,…}`,单次写入量 O(清单长度)。D34 限条数、以及一度想加的条目字数上限,都只是压小常数,方向不对。
+- **D35-3 设计**:状态以操作日志落盘——一次操作一条 `todo-op` 条目:`{op:"add",id,text}` / `{op:"status",id,status,doneAt}` / `{op:"archive",ids}` / `{op:"clear"}`,写入量只跟这次改动有关。依据(pi 1.7.0 `core/session-manager.js` 核实):`getBranch()` 从叶走到根再反转,是根到叶顺序,含全部类型的条目(压缩过的也在),无懒加载;`appendCustomEntry` 把条目接在当前叶之后再把叶前移,顺序由父链保证;`_appendEntry` 同步追加,失败时回滚内存并抛错;pi 没有中途删改条目的路径(`createBranchedSession` 是另存新文件,自定义条目原样带走)。四条取舍:
+  - ①**回放是纯折叠**:`reconstructTodos` 从根到叶依次 `applyOp`,不含任何策略;archive 写显式 id 列表、doneAt 写进条目,回放结果只取决于写过的东西,阈值以后改了也不改写历史。
+  - ②**沉降并进触发它的那条操作**(可选字段 `settled:{dropped,done,pending}`):一次操作只写一个条目,中途崩溃不会留下「加了却没沉降」的半截状态。
+  - ③**旧快照兼容读**:遇到旧版写的 `todo-state` 全量条目就以它为底,之后的增量叠在上面;升级前写的会话(aicontest 的 245 条)重启后照常续用,下一次任何写操作时沉降(那一条带上被沉降的 id 列表,约 1KB,只此一次)。回退到旧版也不崩:旧版只认 `todo-state`,用到的是升级前的最后一份快照。
+  - ④**写成功才更新内存**:落盘失败就回「状态落盘失败」、清单不动。原先是内存照常前进——整表快照下下一次写入能自愈,增量落盘下内存会领先文件,没落盘的改动在重启后永久丢失。
+  - 不做:条目字数上限(增量之后一次 add 只写它自己的文本,上限已无必要,且是用户没要的限制);外部状态文件(不随会话分支走);快照检查点(回放一万条操作也是毫秒级)。
+- **D35-4 效果**:真实会话文件里一条 status 增量 186 字节(约 105 字节是条目自身的 id/父 id/时间戳包装),对比该会话最后一次快照的 0.8MB;单测里同一条 status 在 8 条与 45 条清单上写入量相同,300 条长文 add 的总写入量 < 300KB(整表重写时是 20MB 量级)。旧文件不会自己变小(pi 只追加),能做的是止住增长。
+- **D35-5 守卫**:behavioral——`test_each_write_is_one_small_op_not_a_snapshot`(写入量与清单长度无关、条目里无 todos 数组、245 条旧清单上第一条带沉降 < 1.2KB、第二条 < 160 字节)、`test_live_state_equals_replayed_state`(混合序列 69 步,list 视图、full 视图与五项计数在内存与回放之间逐项相等)、`test_legacy_snapshot_is_the_base_for_new_ops`、`test_malformed_ops_are_ignored_without_crashing`、`test_failed_persist_leaves_memory_unchanged`;E2E `lints/todo_ops_real_session.py`:真实 `pi -p` 先用「旧版写法」的桩扩展写下全量快照,再用新版 `--session` 续接 add + list,再续接 toggle + list——清单与累计数逐项核对,会话文件里恰好 1 条旧快照 + 2 条增量且形状一致;pattern lint `todo_ops_not_snapshots`(写入只走 TODO_OP_ENTRY、回放认旧快照与增量、沉降并入操作、内存更新在落盘之后),反向用例在 `tests/test_lints.py`。变异验证:改回整表写入 → 6 条单测 + E2E 红;不读旧快照 → 4 条单测 + lint + E2E 红;沉降不并入 → 7 条单测 + lint 红。
+- **D35-6 顺带修正**:`todo_output_bounded` 用 `case "status":`…`case "toggle":` 截动作分支,回放函数里也有一对同名 case,被截错段落而误报——锚点限定到 `switch (params.action)`;`todo_single_in_progress_anchor` 的单锚点断言改指 `withStatus`(原 `markStatus` 并入其中),commit 块的长度上限 900 → 1400。
+- **D35-7 生效与影响**:工具的参数 schema 没变,`/reload` 即换新代码(D34 改的描述仍要重启才对模型生效)。部署位已换新;既有会话文件保持原样。

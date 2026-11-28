@@ -22,8 +22,9 @@ def main() -> int:
     enum_match = re.search(r'StringEnum\(\[(.*?)\] as const\)', source)
     if not enum_match or '"archive"' not in enum_match.group(1) or '"full"' not in enum_match.group(1):
         violations.append("动作集缺 archive/full——pending 挂账无机械清账面,永不沉降(工单表现1)")
-    status_block = re.search(r'case "status":(.*?)case "toggle":', source, re.DOTALL)
-    toggle_block = re.search(r'case "toggle":(.*?)case "archive":', source, re.DOTALL)
+    actions = source[source.find('switch (params.action)') :]
+    status_block = re.search(r'case "status":(.*?)case "toggle":', actions, re.DOTALL)
+    toggle_block = re.search(r'case "toggle":(.*?)case "archive":', actions, re.DOTALL)
     for name, block in (("status", status_block), ("toggle", toggle_block)):
         if block and "formatTodos" in block.group(1):
             violations.append(f'{name} 回执返回全表 formatTodos——每次状态变更刷全量行(工单表现1噪音源)')

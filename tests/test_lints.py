@@ -275,3 +275,23 @@ class TestRealSessionTmpdirIsolated:
         (tmp_path / "lints" / "d.py").write_text('DRIVER = REPO / "tests" / "pi_guard_driver.mjs"\nsource = DRIVER.read_text()\n')
         problems = mod.unisolated(tmp_path)
         assert [problem.split(" ")[0] for problem in problems] == ["lints/a.py", "lints/b.py"]
+
+
+class TestTodoOpsNotSnapshots:
+    def test_repo_source_passes(self) -> None:
+        mod = load("todo_ops_not_snapshots")
+        assert mod.lint(REPO) == []
+
+    def test_each_regression_flagged(self) -> None:
+        mod = load("todo_ops_not_snapshots")
+        source = (REPO / "extensions" / "todo.ts").read_text()
+        snapshot = source.replace("pi.appendEntry(TODO_OP_ENTRY, entry)", 'pi.appendEntry("todo-state", state)')
+        assert [v.split("——")[0] for v in mod.violations(snapshot)] == ['appendEntry 写的是 "todo-state" 而不是逐操作增量 TODO_OP_ENTRY']
+        blind = source.replace("entry.customType === LEGACY_SNAPSHOT_ENTRY", "false")
+        assert [v.split("——")[0] for v in mod.violations(blind)] == ["reconstructTodos 不再识别旧的全量快照条目(LEGACY_SNAPSHOT_ENTRY)"]
+        split = source.replace("{ ...op, settled: settleInfo(dropped) }", "op")
+        assert [v.split("——")[0] for v in mod.violations(split)] == ["沉降没有并进触发它的那条操作"]
+        eager = re.sub(r"\n\t+state = applyOp\(state, entry\);", "", source).replace(
+            "const entry = withSettle(state, op);", 'const entry = withSettle(state, op);\n\t\t\t\tstate = applyOp(state, entry);'
+        )
+        assert [v.split("——")[0] for v in mod.violations(eager)] == ["内存状态先于落盘更新"]

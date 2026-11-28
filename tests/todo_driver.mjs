@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { register } from "node:module";
 register(new URL("./typebox_shim.mjs", import.meta.url));
-const { default: factory, markStatus, reconstructTodos, formatTodos, settle } = await import("../extensions/todo.ts");
+const { default: factory, withStatus, reconstructTodos, formatTodos, settle, detailsOf, TODO_LIST_KEEP } = await import("../extensions/todo.ts");
 
 const [scenario, payloadRaw] = process.argv.slice(2);
 const payload = payloadRaw === "-" ? JSON.parse(readFileSync(0, "utf8")) : payloadRaw ? JSON.parse(payloadRaw) : {};
@@ -10,7 +10,7 @@ const out = {};
 if (scenario === "settle") {
 	out.settled = settle(payload.todos ?? []);
 } else if (scenario === "mark-status") {
-	out.todos = markStatus(payload.todos, payload.id, payload.status);
+	out.todos = withStatus(payload.todos, payload.id, payload.status, payload.status === "done" ? 1 : undefined);
 } else if (scenario === "reconstruct") {
 	out.state = reconstructTodos(payload.branch ?? []);
 } else if (scenario === "format") {
@@ -20,6 +20,7 @@ if (scenario === "settle") {
 	const tools = {};
 	const commands = {};
 	const entries = [];
+	let appends = 0;
 	const pi = {
 		on: (event, handler) => {
 			handlers[event] = handler;
@@ -31,8 +32,9 @@ if (scenario === "settle") {
 			commands[name] = def;
 		},
 		appendEntry: (customType, data) => {
-			if (payload.appendFails) throw new Error("mock append reject");
-			entries.push({ customType, data });
+			appends += 1;
+			if (payload.appendFails || appends <= (payload.appendFailCount ?? 0)) throw new Error("mock append reject");
+			entries.push({ type: "custom", customType, data });
 		},
 	};
 	await factory(pi);
@@ -53,10 +55,15 @@ if (scenario === "settle") {
 			total: result.details.total,
 			settled: result.details.settled,
 			activeId: result.details.activeId ?? null,
+			nextId: result.details.nextId,
 		});
 	}
-	out.entries = entries.filter((e) => e.customType === "todo-state").map((e) => e.data);
-	out.lastState = out.entries.length ? out.entries[out.entries.length - 1].todos : [];
+	out.branch = entries;
+	const replayed = reconstructTodos([...(payload.branch ?? []), ...entries]);
+	out.replayed = replayed;
+	out.replayedDetails = detailsOf(replayed, "replay");
+	out.replayedText = formatTodos(replayed.todos, TODO_LIST_KEEP, replayed.settledDone);
+	out.replayedFull = formatTodos(replayed.todos, Number.POSITIVE_INFINITY, replayed.settledDone);
 	out.command = commands["todos"] ? await (async () => {
 		const notes = [];
 		await commands["todos"].handler([], { ui: { notify: (text) => notes.push(text) } });
