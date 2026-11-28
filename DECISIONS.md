@@ -196,13 +196,14 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D23-5 守卫**:behavioral `test_factory_notify_scoped_to_creating_session_not_subagent`(双实例共享登记表)+ E2E `lints/tasks_notify_subagent_real_session.py`(真 pi + 真 pi-subagents)+ pattern `lints/task_notify_scoped_in_subagent_sessions.py`。
 ## D24(pi-subagents 分支布局与部署方式:kit 分支为唯一真相,2026-11-28,用户「可以对上游进行分支（方便后续我们抓上游自行合并的）」)
 
-- **D24-1 布局**:`~/workspace/pi-subagents-kit`,`main` 跟踪 `upstream/master`(tintinweb/pi-subagents,当前 v0.26.3-1-g3ebbb5f,保持纯净);`kit` = v0.23.2 + 4 个小而独立的补丁提交:16af139 schedule RPC 写通道、c7f8996 workflow run 管理 RPC、038c6cc 描述瘦身、83a7c04 `subagents:rpc:list`/`get` 快照 + ping 的 `features`。抓上游 = `git fetch upstream && git rebase v<新版本> kit`,补丁按文件分散,失配即冲突可见。
+- **D24-1 布局**:`~/workspace/pi-subagents-kit`,`main` 跟踪 `upstream/master`(tintinweb/pi-subagents,当前 v0.26.3-1-g3ebbb5f,保持纯净);`kit` = v0.23.2 + 5 个小而独立的补丁提交:16af139 schedule RPC 写通道、c7f8996 workflow run 管理 RPC、038c6cc 描述瘦身、83a7c04 `subagents:rpc:list`/`get` 快照 + ping 的 `features`、3c5b05f 快照补 `result`/`error`。抓上游 = `git fetch upstream && git rebase v<新版本> kit`,补丁按文件分散,失配即冲突可见。
 - **D24-2 基线留 0.23.2**:部署位就是 0.23.2,行为不变、零风险;升 0.26.3 会改动子代理生命周期事件、`pi -p` 等后台 agent、stop 语义,且 aicontest 要求升前书面核实 5 条(续跑兼容、args 原样、并发上限与 gate 语义、其两个钩子兼容、一键回退)并等其空档——列为待办,不在本轮。
 - **D24-3 list/get 是上游 0019e64(#450)的小型回移**:该提交改动面大(agent-manager/index/subagent-info/completion-outbox,含嵌套 agent 生命周期事件的破坏性变更),不适合作补丁;kit 版只加两个只读快照处理器,回复形状照上游 SubagentInfo,另带 `handle`/`alias`/`outputFile`/`sessionId`(bg_* 与子代理标签要用)。将来 rebase 到含 0019e64 的版本时,冲突解法是取上游、弃 kit 这一处。
 - **D24-4 部署改为从 kit 分支同步**:`scripts/sync-subagents-kit.mjs` 取代锚点文本替换的 `patch-subagents-schedule-rpc.mjs`(D11-2 的机制到此为止)。理由:补丁一旦超出 3 处锚点(83a7c04 即是),在脚本里再抄一遍源码等于两份真相;分支才是真相。脚本行为:校验已安装 `package.json` 的 version 等于 kit 分支基线版本,不等则报错退出不动文件;`git archive kit src` 到临时目录,与部署位逐字节相同则跳过,否则整目录换入并清 jiti 缓存。只同步 `src`(pi 经 jiti 直接加载 src/*.ts)。
-- **D24-5 生效面**:同步只影响新启动的 pi 进程(在跑进程的模块已在内存;子代理会话不加载 pi-subagents),且 83a7c04 只加 RPC 不改工具 schema,故可在 aicontest 运行期间同步。守卫:E2E `lints/subagents_kit_rpc_real_session.py` 对部署位实测 ping 的 features 与 list/get 形状(`KIT_SUBAGENTS_SRC` 可指向别处先验)。
+- **D24-5 生效面**:同步只影响新启动的 pi 进程(在跑进程的模块已在内存;子代理会话不加载 pi-subagents),且 83a7c04 只加 RPC 不改工具 schema,故可在 aicontest 运行期间同步。守卫:E2E `lints/subagents_kit_rpc_real_session.py` 实测 ping 的 features 与 list/get 形状(被测源的解析见 D24-7)。
 - **D24-5b 随之退役**:D14-3 的 lint `patch_replacement_reanchors`(锚点注入点存活不变量)只对锚点替换机制有意义,机制没了规则一并删除;新机制的不变量(版本校验、幂等、部署位==分支)由 `tests/test_sync_subagents_kit.py` 与上述 E2E 承担。
 - **D24-6 托管**:目前只是本机克隆(保留 upstream 远端)。建私有镜像仓与推送属对外动作,待用户批准。
+- **D24-7 被测对象是 kit 分支头,不是部署位**:kit 补丁在分支里没有任何单元测试(v0.23.2 的测试套件要 vitest,本机没装),3c5b05f 提交时也没有任何自动覆盖,只能事后手工搭隔离安装根实测。于是把这一步固化:加载 pi-subagents 且依赖 kit 补丁的两个 E2E(`subagents_kit_rpc_real_session`、`bg_tools_real_session`)按 `KIT_SUBAGENTS_SRC` → kit 分支 → 部署位 解析被测源;kit 分支须满足基线版本等于已安装版本(与 D24-4 的同步脚本同一道闸),满足则 `git archive <分支> src` 进临时安装根、声明的依赖软链到已安装目录。只有「kit 分支检出」才做严格断言(终态快照的 `result`/`error`),回退到部署位时 ok 行写明原因,不判——这样部署滞后(等空档、D25-9)不会让 gate 变红,而分支头一坏 gate 立刻红。`tasks_notify_subagent_real_session` 验的是通知归属(D23),与补丁版本无关,仍对部署位实测。
 
 ## D25(后台工具统一:bg_* 五件套并入 tasks.ts,2026-11-28,用户「给我统一这些工具的方案」+ aicontest 回函口径)
 

@@ -16,6 +16,7 @@ FINAL_TEXT = "BG_TOOLS_PROBE_DONE"
 CHILD_MARKER = "BG_TOOLS_CHILD_MARKER"
 CHILD_DONE = "BG_CHILD_DONE"
 TASK_MARK = "BG_TASK_MARK"
+KIT_LABEL = "(kit 分支)"
 
 
 def pi_binary() -> str | None:
@@ -34,13 +35,52 @@ def pi_package_root(pi: str) -> Path | None:
     return None
 
 
-def subagents_entry() -> Path | None:
-    entry = Path.home() / ".pi/agent/npm/node_modules/@tintinweb/pi-subagents/src/index.ts"
-    return entry if entry.exists() else None
+def kit_git(repo: Path, *args: str) -> bytes:
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, check=True).stdout
 
 
-def is_child_request(request: dict) -> bool:
-    return any(message.get("role") == "user" and CHILD_MARKER in json.dumps(message.get("content"), ensure_ascii=False) for message in request.get("messages") or [])
+def resolve_entry() -> tuple[Path | None, str, Path | None]:
+    override = os.environ.get("KIT_SUBAGENTS_SRC")
+    if override:
+        return Path(override), f"KIT_SUBAGENTS_SRC={override}", None
+    installed = Path.home() / ".pi/agent/npm/node_modules"
+    deployed = installed / "@tintinweb/pi-subagents"
+    repo = Path(os.environ.get("PI_SUBAGENTS_KIT") or Path.home() / "workspace/pi-subagents-kit")
+    branch = os.environ.get("PI_SUBAGENTS_KIT_BRANCH") or "kit"
+    entry = deployed / "src/index.ts"
+
+    def fallback(note: str) -> tuple[Path | None, str, Path | None]:
+        return (entry if entry.exists() else None), f"部署位({note})", None
+
+    if not repo.exists() or not (deployed / "package.json").exists():
+        return fallback("本机无 kit 分支仓库" if not repo.exists() else "pi-subagents 未安装")
+    scratch = None
+    try:
+        metadata = json.loads(kit_git(repo, "show", f"{branch}:package.json"))
+        installed_version = json.loads((deployed / "package.json").read_text())["version"]
+        if metadata["version"] != installed_version:
+            return fallback(f"{branch} 分支基线 {metadata['version']} 与已安装 {installed_version} 不一致")
+        archive = kit_git(repo, "archive", branch, "src")
+        head = kit_git(repo, "rev-parse", "--short", branch).decode().strip()
+        scratch = Path(tempfile.mkdtemp(prefix="kit-subagents-src-"))
+        package = scratch / "node_modules/@tintinweb/pi-subagents"
+        package.mkdir(parents=True)
+        (package / "package.json").write_text(json.dumps(metadata))
+        subprocess.run(["tar", "-x", "-C", str(package)], input=archive, check=True)
+        for name in metadata.get("dependencies", {}):
+            target = scratch / "node_modules" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(installed / name, target)
+        return package / "src/index.ts", f"{branch}@{head}{KIT_LABEL}", scratch
+    except (subprocess.CalledProcessError, KeyError, OSError):
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
+        return fallback(f"{branch} 分支取不出 src")
+
+
+def user_text(request: dict) -> str:
+    return " ".join(str(message.get("content")) for message in request.get("messages") or [] if message.get("role") == "user")
+
 
 
 def tool_results(request: dict) -> list[str]:
@@ -96,12 +136,13 @@ class ScriptedModel(BaseHTTPRequestHandler):
         with self.server.state_lock:
             self.server.requests.append(request)
             index = len(self.server.requests)
-        if is_child_request(request):
+        prompt = user_text(request)
+        if CHILD_MARKER in prompt:
             call = ("bash", {"command": "sleep 2"}) if not tool_results(request) else None
         else:
             call = next_call(request)
         if call is None:
-            deltas = [{"role": "assistant", "content": FINAL_TEXT}]
+            deltas = [{"role": "assistant", "content": CHILD_DONE if CHILD_MARKER in prompt else FINAL_TEXT}]
             finish = "stop"
         else:
             name, arguments = call
@@ -146,7 +187,7 @@ def run_session(pi: str, package_root: Path, subagents: Path, server: ThreadingH
     return result.stderr
 
 
-def lint(pi: str, package_root: Path, subagents: Path) -> list[str]:
+def lint(pi: str, package_root: Path, subagents: Path, source: str) -> list[str]:
     problems = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), ScriptedModel)
     server.requests = []
@@ -163,7 +204,7 @@ def lint(pi: str, package_root: Path, subagents: Path) -> list[str]:
         server.server_close()
     if re.search(r"(extension|tasks|subagents)[^\n]*(error|failed)", stderr, re.IGNORECASE):
         problems.append(f"真实会话里扩展报错: {stderr.strip()[-400:]}")
-    parents = [request for request in server.requests if not is_child_request(request)]
+    parents = [request for request in server.requests if CHILD_MARKER not in user_text(request)]
     if not parents:
         return problems + ["脚本化会话没有留下父会话请求"]
     results = tool_results(parents[-1])
@@ -186,6 +227,10 @@ def lint(pi: str, package_root: Path, subagents: Path) -> list[str]:
         problems.append(f"bg_schedule list 应回显空清单: {jobs[:300]}")
     if exit_codes != ["5"]:
         problems.append(f"任务应把自己的退出码落到 <id>.exit: {exit_codes}")
+    if not source.endswith(KIT_LABEL):
+        return problems
+    if "result(尾" not in agent_status or CHILD_DONE not in agent_status:
+        problems.append(f"bg_status(agent) 应给出子代理结论的尾部: {agent_status[:300]}")
     return problems
 
 
@@ -195,16 +240,19 @@ if __name__ == "__main__":
         print("bg_tools_real_session: skip(默认路径下无 pi)")
         sys.exit(0)
     package_root = pi_package_root(pi)
-    subagents = subagents_entry()
-    if package_root is None or subagents is None:
+    entry, source, scratch = resolve_entry()
+    if package_root is None or entry is None:
         print("bg_tools_real_session: skip(找不到 pi 包根目录或 pi-subagents)")
         sys.exit(0)
     try:
-        found = lint(pi, package_root, subagents)
+        found = lint(pi, package_root, entry, source)
     except (RuntimeError, json.JSONDecodeError, KeyError, OSError, subprocess.TimeoutExpired) as error:
         print(f"bg_tools_real_session: E2E 执行失败: {error}")
         sys.exit(1)
+    finally:
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
     for item in found:
         print(f"bg_tools_real_session: {item}")
-    print("bg_tools_real_session: ok" if not found else "")
+    print(f"bg_tools_real_session: ok(被测源 {source})" if not found else "")
     sys.exit(1 if found else 0)
