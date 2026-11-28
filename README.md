@@ -9,7 +9,7 @@
 - **tasks 后台任务**:append-only journal 单一真相、跨会话状态增量重放、pid 复用防护(`/proc` starttime)、owner 必收通知
 - **compact 闭环**:模型在自然工作边界自主发起压缩(摘要强制携带 `<fold-index>` 索引头,单活代际链,蒸馏并集),压缩完成自动注入 `[compact 完成]` 续作唤醒词(按 fold-index 重定位,willRetry 时不扰)
 - **context-gauge 自主运行监控**:工具结果按需附加水位+时钟行(15min 时间档/5% 水位档/30% 提示 50% 催压缩/50% 后每工具直报),TUI footer 常显——频控对齐 CC gauge_hook
-- **subagent-jobs 定时任务与 workflow 管理**:job_list(RPC 实时态/文件降级)+ job_cancel + job_reschedule + workflow_list/status/stop/pause/resume——经 schedule-rpc patch(锚点注入上游事件总线,幂等可重跑)打通模型侧写通道
+- **后台工具统一(D25)**:task_create + bg_list / bg_status / bg_log / bg_stop / bg_schedule——命令任务、子代理、workflow run、定时任务一套句柄(12 个工具收到 6 个);子代理与 workflow 走 pi-subagents kit 分支的 RPC 通道,不可达时回落本机 journal
 - **AGENTS.md 管理节部署**:CommonMark 围栏感知的节级替换,幂等,节外用户内容原样保留
 - **codemode 选取决策树**:≥3 轮工具往返的目标编译成脚本,中间态留在脚本内只 return 结论
 - **七轮对抗性审计**:21 项确认缺陷全部修复并钉回归(含 6 次"修复引入回归"由轻量回归轮抓出),详见 `DECISIONS.md`
@@ -47,7 +47,7 @@ git clone https://github.com/RegretSSS/pi-agent-kit ~/.pi-agent-kit
 
 ```
 agents-md/    AGENTS.md 管理节版本化真相
-extensions/   pi 扩展(memory / tasks / compact-tool / history / a2a-inbox / context-gauge / subagent-jobs)
+extensions/   pi 扩展(memory / tasks(含 bg_* 统一管理面)/ compact-tool / a2a-inbox / context-gauge / pi-guard)
 lints/        机械规则(一规则一文件,run-lints.sh 自动发现)
 scripts/      run-lints / enable-gate / sync-mcp / quick-install
 skills/       subagent-workflows 编排引导

@@ -204,3 +204,16 @@ SPEC 未覆盖处的自行决策记录。格式:编号、决策、理由。
 - **D24-5b 随之退役**:D14-3 的 lint `patch_replacement_reanchors`(锚点注入点存活不变量)只对锚点替换机制有意义,机制没了规则一并删除;新机制的不变量(版本校验、幂等、部署位==分支)由 `tests/test_sync_subagents_kit.py` 与上述 E2E 承担。
 - **D24-6 托管**:目前只是本机克隆(保留 upstream 远端)。建私有镜像仓与推送属对外动作,待用户批准。
 
+## D25(后台工具统一:bg_* 五件套并入 tasks.ts,2026-11-28,用户「给我统一这些工具的方案」+ aicontest 回函口径)
+
+- **D25-1 工具面**:上游 4 个不动;本仓 12 个 → 6 个——`task_create` 保留,新增 `bg_list(kind?)` / `bg_status(handle?, wait?, until: exit|idle, lines?)` / `bg_log(handle, since?)` / `bg_stop(handle)` / `bg_schedule(action: list|cancel|update, …)`。统一句柄 `task:<id|名>` / `agent:<id|@名>` / `wf:<run>` / `job:<id>`;不带前缀的裸 id 不收——四类 id 空间不相通,前缀即类型。旧名→新名对照写进各工具描述,**不做过渡别名**(aicontest:其提示与 skill 未点名旧工具名)。
+- **D25-2 为什么是一个文件而不是 bg.ts + 库**:pi 对**每个扩展文件用独立 jiti 实例**加载(`dist/core/extensions/loader.js` 的 `loadExtensionModule`,`moduleCache:false`),扩展之间相对 import 拿到的是另一份模块实例——登记表、子进程表、停任务逻辑这些引擎状态永不相通;且部署位是平铺目录,没有默认导出的库文件会被报成「does not export a valid factory function」。故 bg_* 与任务引擎同在 `tasks.ts`,`subagent-jobs.ts` 的库内容并入后删除。守卫:pattern `extensions_self_contained`(扩展文件之间禁止相对导入)+ E2E `bg_tools_real_session`(真 pi 加载后 bg_* 能等到并读出本会话 task_create 的任务与 Agent 起的子代理)。
+- **D25-3 等待语义**:bg_status 只等「目标退出」与「本会话全部后台空闲」,上限 120 秒(aicontest 口径);不再有「有新输出就返回」。idle 的口径:登记表里本进程拥有且进程仍存活的命令任务 + pi-subagents 清单里未到终态的子代理 + 未到终态的 workflow run;别的会话的任务不计,workflow RPC 不可达时明示「未计入」——跨会话、跨进程只能尽力而为。
+- **D25-4 游标语义**:bg_log 不传 since 只给尾部(命令输出 4KB、子代理会话记录末 12 行、log() 末 20 条),单次返回有上限(命令 16KB、会话 64KB),超出即跳到末尾并标 `省略=N字节`。命令任务与子代理记录用字节游标,子代理记录的游标对齐到完整行(末行没写完时下次从行首读),workflow 用条数游标。协议行 `[cursor=…]` 必须进 content(模型只读 content)。
+- **D25-5 退出码落盘**:task_create 的命令经 `trap 'printf %s "$?" > <id>.exit' EXIT` 包裹;`markExit` 在「无码无信号」时回落读 `<id>.exit`,`reapDeadPids` 走 markExit,gc 一并清。修的是「创建它的实例丢了子进程句柄(reload/重启)后,退出码只能记成 unknown(reaped)」。选 trap 而非子 shell:保住 `exec` 与 `set -e` 的旧语义。已知边界:命令里 `exec`、或自带 EXIT trap 时不落盘(退回旧行为);任务 pid 现在是包裹 bash 而非命令进程本身,单独 `kill <pid>` 不再等于结束命令——要停请走 bg_stop(按进程组发信号)。守卫:behavioral `test_factory_exit_code_survives_instance_loss` 与 `test_exit_recording_command`(反向验证:去掉包裹即退回 unknown),pattern `task_exit_code_persisted`。
+- **D25-6 pause/resume 退役**:实测 pause 只在把新 agent 交给管理器之前停靠,已交出的照常起跑,保证不了「不再起新代理」(aicontest:保证不了就别留)。`bg_schedule` 只有 list / cancel / update;腾车道用 bg_stop(wf) + scriptPath + resumeFromRunId 续跑,路径不变。kit 分支的 pause/resume RPC(c7f8996)暂留——/agents 面板仍在用。
+- **D25-7 降级三态**:子代理与 workflow 通道按 ping 的 `features` 分「未装 pi-subagents(子代理会话或未安装)/ 已装但缺 kit RPC / 可用」。未装时 bg_list 不刷「不可用」噪声,点名要时才报;workflow 不可达时回落本机 journal(D14-3 的不变量迁到 lint `bg_workflow_journal_fallback`,原名 `workflow_status_journal_fallback` 随工具改名退役)。
+- **D25-8 列表降噪**:bg_list 的命令任务只列在跑的 + 最近 10 条已退出,子代理最多 40 个;要的几类都空才回「无后台事务」。
+- **D25-9 部署与配套**:改的是工具 schema,会话内冻结——**只落仓与隔离实测,不往部署位拷,等 aicontest 报空档**(其 mock 与判官工作流在跑)。配套:`no-rogue-background` 的拦截提示改指 bg_*;`tests/test_deploy.py` 的扩展集合去掉 subagent-jobs.ts;typebox 替身补 Boolean;既有的 factory 场景测试过去写真实 `~/.agents/tasks`,本次改为隔离 HOME。
+- **D25-10 类型检查的空档**:pi 用 jiti 去类型加载,gate 里没有任何 TS 类型检查——本次靠手工 `tsc --strict` 抓到 3 处(纯函数误放进工厂函数体导致 `export` 位置非法、工具结果字面量被拓宽、`filter(Boolean)` 未收窄)。tsc 不在本仓依赖里(本机只有 Windows 侧的全局安装),未做成 lint;是否引入 devDependency 版 typescript 并加一条类型检查 lint,待用户裁决。
+- **D25-11 旧决策的归宿**:D11(job_*)与 D14(workflow_*)的通道到此为止;D22-5 留下的三条(task_output 的 since 缺省秒回、wait 等新输出、描述教轮询)在此解决。

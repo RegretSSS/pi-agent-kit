@@ -8,11 +8,14 @@ DRIVER = REPO / "tests" / "tasks_core_driver.mjs"
 
 
 def drive(root: Path, scenario: str, payload: dict | None = None) -> dict:
+    home = root / "home"
+    home.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
         ["node", "--experimental-strip-types", str(DRIVER), str(root), scenario, json.dumps(payload or {}, ensure_ascii=False)],
         capture_output=True,
         text=True,
         cwd=REPO,
+        env=dict(os.environ, HOME=str(home)),
     )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
@@ -57,21 +60,19 @@ def test_ring_buffer_cursor_survives_shrink(tmp_path) -> None:
     task_id = created["record"]["id"]
     written = drive(tmp_path, "write-log", {"id": task_id, "kb": 300})
     assert written["bytes"] == 300 * 1024
-    full = drive(tmp_path, "read-range", {"id": task_id, "since": 0})
+    full = drive(tmp_path, "log-window", {"id": task_id, "since": 0})
     assert full["cursor"] == 300 * 1024
-    assert full["contentLen"] == 300 * 1024
-    mid_cursor = 150 * 1024
-    half = drive(tmp_path, "read-range", {"id": task_id, "since": mid_cursor})
-    assert half["cursor"] == 300 * 1024
-    assert half["contentLen"] == 150 * 1024
+    assert full["contentLen"] == 16 * 1024 and full["skipped"] == 300 * 1024 - 16 * 1024
     shrunk = drive(tmp_path, "shrink", {"id": task_id})
     assert shrunk["logBase"] == 300 * 1024 - 128 * 1024
-    after = drive(tmp_path, "read-range", {"id": task_id, "since": 0})
+    after = drive(tmp_path, "log-window", {"id": task_id, "since": 0})
     assert after["cursor"] == 300 * 1024
-    assert after["contentLen"] == 128 * 1024
-    tail = drive(tmp_path, "read-range", {"id": task_id, "since": mid_cursor})
+    assert after["contentLen"] == 16 * 1024 and after["skipped"] == 128 * 1024 - 16 * 1024
+    below_rotation = drive(tmp_path, "log-window", {"id": task_id, "since": 150 * 1024})
+    assert below_rotation["contentLen"] == 16 * 1024 and below_rotation["skipped"] == 128 * 1024 - 16 * 1024
+    tail = drive(tmp_path, "log-window", {"id": task_id, "since": 288 * 1024})
     assert tail["cursor"] == 300 * 1024
-    assert tail["contentLen"] == 128 * 1024 - 0
+    assert tail["contentLen"] == 12 * 1024 and tail["skipped"] == 0
 
 
 def test_gc_removes_expired_exited(tmp_path) -> None:
@@ -81,6 +82,7 @@ def test_gc_removes_expired_exited(tmp_path) -> None:
     assert out["removed"] >= 1
     assert "20000101000000-9" not in out["remaining"]
     assert out["logGone"] is True
+    assert out["exitGone"] is True
     kinds = [json.loads(line)["kind"] for line in out["journal"].strip().split("\n") if line]
     assert "gc" in kinds
 
@@ -119,24 +121,24 @@ def test_reap_owner_yield_takeover_self(tmp_path) -> None:
     assert out["yieldAfterOwnerDeath"] == "exited"
 
 
-def test_poll_for_progress_three_modes(tmp_path) -> None:
-    instant = drive(tmp_path, "poll-progress", {"mode": "instant"})
-    assert instant["result"]["changed"] is True and instant["result"]["waitedMs"] == 0
-    timeout = drive(tmp_path, "poll-progress", {"mode": "timeout", "waitMs": 400, "intervalMs": 50})
-    assert timeout["result"]["changed"] is False and timeout["result"]["waitedMs"] >= 350
-    grow = drive(tmp_path, "poll-progress", {"mode": "grow", "delayMs": 250, "waitMs": 2000, "intervalMs": 50})
-    assert grow["result"]["changed"] is True and 200 <= grow["result"]["waitedMs"] < 1500
-    exited = drive(tmp_path, "poll-progress", {"mode": "exit", "delayMs": 250, "waitMs": 2000, "intervalMs": 50})
-    assert exited["result"]["changed"] is True and exited["result"]["state"] == "exited" and exited["result"]["cursor"] == 10
+def test_wait_until_three_modes_and_abort(tmp_path) -> None:
+    instant = drive(tmp_path, "wait-until", {"mode": "instant"})
+    assert instant["result"] == {"waitedMs": 0, "calls": 1}
+    timeout = drive(tmp_path, "wait-until", {"mode": "timeout", "waitMs": 400, "intervalMs": 50})
+    assert 390 <= timeout["result"]["waitedMs"] < 600 and timeout["result"]["calls"] >= 7
+    flip = drive(tmp_path, "wait-until", {"mode": "flip", "delayMs": 250, "waitMs": 2000, "intervalMs": 50})
+    assert 240 <= flip["result"]["waitedMs"] < 600
+    abort = drive(tmp_path, "wait-until", {"mode": "abort", "abortAfterMs": 100, "waitMs": 2000, "intervalMs": 50})
+    assert 90 <= abort["result"]["waitedMs"] < 400
 
 
-def test_output_wait_real_log_growth(tmp_path) -> None:
-    out = drive(tmp_path, "output-wait", {"appendAfterMs": 300, "appendText": "watcher-woken", "waitMs": 3000})
-    assert out["result"]["changed"] is True
-    assert out["result"]["content"] == "watcher-woken"
-    assert out["result"]["elapsedMs"] >= 250
-    quiet = drive(tmp_path, "output-wait", {"waitMs": 400})
-    assert quiet["result"]["changed"] is False and quiet["result"]["content"] == ""
+def test_exit_recording_command(tmp_path) -> None:
+    out = drive(tmp_path, "exit-command")
+    assert out["plain"] == {"code": 7, "stdout": "hi\n", "file": "7"}
+    assert out["quoted"]["code"] == 3 and out["quoted"]["file"] == "3"
+    assert out["failed"]["code"] == 1 and out["failed"]["file"] == "1"
+    assert out["trapKeepsStatus"] == {"code": 1, "stdout": "", "file": "1"}
+    assert out["execed"]["code"] == 0 and out["execed"]["file"] is None
 
 
 def test_exit_signal_survives_reload(tmp_path) -> None:
@@ -171,20 +173,38 @@ def test_factory_notify_steered_during_run_held_during_maintenance(tmp_path) -> 
 
 
 def test_factory_notify_scoped_to_creating_session_not_subagent(tmp_path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    result = subprocess.run(
-        ["node", "--experimental-strip-types", str(DRIVER), str(home / "reg"), "factory-two-sessions", "{}"],
-        capture_output=True,
-        text=True,
-        cwd=REPO,
-        env=dict(os.environ, HOME=str(home)),
-    )
-    assert result.returncode == 0, result.stderr
-    out = json.loads(result.stdout)
+    out = drive(tmp_path / "reg", "factory-two-sessions")
     assert out["childSeesParentTask"] is True
     assert out["recordedExitCode"] == 7
     assert len(out["parentSent"]) == 1 and out["parentOwnedId"] in out["parentSent"][0] and "code=7" in out["parentSent"][0]
     assert out["childSent"] == []
     assert len(out["childOwnSent"]) == 1 and "code=9" in out["childOwnSent"][0]
     assert out["classifier"] == [True, True, False, False, False, False, False]
+
+
+def test_factory_bg_task_flow(tmp_path) -> None:
+    out = drive(tmp_path / "reg", "factory-bg-flow")
+    assert out["runningState"] == "running" and out["running"].startswith("task:") and "flow" in out["running"]
+    assert out["logCursor"] == 0 and out["logState"] == "running"
+    assert out["waitedState"] == "exited" and out["waitedCode"] == 6 and out["waitedMs"] >= 900
+    assert "exit=code=6" in out["waitedText"] and "FLOW_MARK" in out["finalText"] and "[cursor=10 state=exited exit=code=6]" in out["finalText"]
+    assert out["againText"] == "(无输出)\n[cursor=10 state=exited exit=code=6]"
+    assert "幂等跳过" in out["stopText"]
+    assert out["badIsError"] is True and out["missingIsError"] is True
+    assert out["listIsError"] is False and f"task:" in out["listText"]
+    assert out["names"] == ["bg_list", "bg_log", "bg_schedule", "bg_status", "bg_stop", "task_create"]
+
+
+def test_factory_bg_log_tail_and_cap(tmp_path) -> None:
+    out = drive(tmp_path / "reg", "factory-bg-log-cap")
+    assert out["state"] == "exited"
+    assert out["tail"]["len"] == 4096 and out["tail"]["ends"] is True
+    assert out["tail"]["protocol"] == "[cursor=20011 state=exited exit=code=0]"
+    assert out["full"]["len"] == 16 * 1024 and "省略=3627字节" in out["full"]["protocol"]
+    assert out["again"] == "(无输出)\n[cursor=20011 state=exited exit=code=0]"
+
+
+def test_factory_exit_code_survives_instance_loss(tmp_path) -> None:
+    out = drive(tmp_path / "reg", "factory-reload-exit-code")
+    assert out["state"] == "exited" and out["code"] == 7 and "exit=code=7" in out["text"]
+    assert out["journalCode"] == 7 and "exit=code=7" in out["listed"]

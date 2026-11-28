@@ -201,8 +201,8 @@ def lint(pi: str, package_root: Path, subagents: Path) -> list[str]:
         if message.get("role") == "assistant"
         for call in message.get("tool_calls") or []
     ]
-    if "task_output" in called:
-        problems.append("脚本化模型不应轮询,却出现了 task_output")
+    if {"bg_log", "bg_status"} & set(called):
+        problems.append(f"脚本化模型不应轮询,却出现了 bg_log / bg_status")
     return problems
 
 

@@ -1,13 +1,48 @@
 import { register } from "node:module";
 register(new URL("./typebox_shim.mjs", import.meta.url));
-import { TaskRegistry, readRange, parseLogTail } from "../extensions/tasks.ts";
-import { writeFile } from "node:fs/promises";
+import { TaskRegistry, logWindow, parseLogTail } from "../extensions/tasks.ts";
+import { readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 const [root, scenario, payloadRaw] = process.argv.slice(2);
 const payload = payloadRaw ? JSON.parse(payloadRaw) : {};
 const out = {};
 
 const registry = new TaskRegistry(root);
+
+const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function bootFactory(options = {}) {
+	const { default: factory } = await import("../extensions/tasks.ts");
+	const tools = {};
+	const handlers = {};
+	const sent = [];
+	const pi = {
+		on: (event, handler) => {
+			handlers[event] = handler;
+		},
+		registerTool: (tool) => {
+			tools[tool.name] = tool;
+		},
+		registerCommand: () => {},
+		sendMessage: (message) => {
+			sent.push(message.content);
+		},
+		events: { on: () => () => {}, emit: () => {} },
+	};
+	await factory(pi);
+	const idle = { value: options.startIdle ?? true };
+	const ctx = {
+		cwd: root,
+		sessionManager: { getBranch: () => [], getSessionName: () => options.sessionName ?? "main session" },
+		isIdle: () => idle.value,
+	};
+	await handlers["session_start"]({}, ctx);
+	return { tools, handlers, sent, ctx, idle };
+}
+
+const text = (result) => result.content?.[0]?.text ?? "";
 
 switch (scenario) {
 	case "create": {
@@ -83,12 +118,14 @@ switch (scenario) {
 		out.logBase = task ? task.logBase : null;
 		break;
 	}
-	case "read-range": {
+	case "log-window": {
+		await registry.ensureLoaded();
 		const task = await registry.find(payload.id);
 		const log = await registry.readLog(payload.id);
-		const result = readRange(task, log ?? Buffer.alloc(0), payload.since ?? 0);
-		out.cursor = result.cursor;
-		out.contentLen = Buffer.byteLength(result.content, "utf8");
+		const window = logWindow(task, log ?? Buffer.alloc(0), payload.since);
+		out.cursor = window.cursor;
+		out.contentLen = Buffer.byteLength(window.content, "utf8");
+		out.skipped = window.skipped;
 		break;
 	}
 	case "tail": {
@@ -104,6 +141,7 @@ switch (scenario) {
 		];
 		await fsp.writeFile(`${root}/tasks.jsonl`, events.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
 		await fsp.writeFile(`${root}/20000101000000-9.log`, "old", "utf8");
+		await fsp.writeFile(`${root}/20000101000000-9.exit`, "0", "utf8");
 		out.ok = true;
 		break;
 	}
@@ -114,6 +152,10 @@ switch (scenario) {
 		out.removed = await fresh.gcExpired();
 		out.remaining = (await fresh.list()).map((task) => task.id);
 		out.logGone = !(await fsp.stat(`${root}/20000101000000-9.log`).then(
+			() => true,
+			() => false,
+		));
+		out.exitGone = !(await fsp.stat(`${root}/20000101000000-9.exit`).then(
 			() => true,
 			() => false,
 		));
@@ -134,8 +176,7 @@ switch (scenario) {
 	case "escape-filter": {
 		const task = { id: "esc-1", name: "esc", cmd: "x", cwd: root, pid: 0, state: "exited", created: "2026-01-01T00:00:00.000Z", exitCode: 0, logBase: 0 };
 		const buf = Buffer.from("clean\x1b[31mred\x1b[0m\ndone\n", "utf8");
-		const range = readRange(task, buf, 0);
-		out.content = range.content;
+		out.content = logWindow(task, buf, 0).content;
 		break;
 	}
 	case "offset-probe": {
@@ -184,80 +225,50 @@ switch (scenario) {
 		out.yieldAfterOwnerDeath = all.find((t) => t.id === yieldId)?.state;
 		break;
 	}
-	case "poll-progress": {
-		const { pollForProgress } = await import("../extensions/tasks.ts");
-		const mode = payload.mode;
-		let probeCalls = 0;
-		const started = Date.now();
-		const probe = async () => {
-			probeCalls += 1;
-			if (mode === "instant") return { cursor: 100, state: "running", exitCode: null };
-			if (mode === "timeout") return { cursor: 10, state: "running", exitCode: null };
-			if (mode === "grow" && Date.now() - started >= (payload.delayMs ?? 300)) return { cursor: 50, state: "running", exitCode: null };
-			if (mode === "exit" && Date.now() - started >= (payload.delayMs ?? 300)) return { cursor: 10, state: "exited", exitCode: 3 };
-			return { cursor: 10, state: "running", exitCode: null };
+	case "exit-command": {
+		const { exitRecordingCommand } = await import("../extensions/tasks.ts");
+		const { execFile } = await import("node:child_process");
+		const run = async (name, cmd) => {
+			const file = join(root, name);
+			const outcome = await new Promise((resolve) => {
+				execFile("/bin/bash", ["-c", exitRecordingCommand(cmd, file)], (error, stdout) => {
+					resolve({ code: error ? error.code : 0, stdout });
+				});
+			});
+			return { ...outcome, file: existsSync(file) ? await readFile(file, "utf8") : null };
 		};
-		const result = await pollForProgress(probe, 10, (payload.waitMs ?? 1000), undefined, (payload.intervalMs ?? 50));
-		out.result = { changed: result.changed, waitedMs: result.waitedMs, cursor: result.snapshot.cursor, state: result.snapshot.state };
-		out.probeCalls = probeCalls;
-		out.elapsedMs = Date.now() - started;
+		out.plain = await run("plain.exit", "echo hi; exit 7");
+		out.quoted = await run(`it's "q" $d \\.exit`, "exit 3");
+		out.execed = await run("exec.exit", "exec true");
+		out.failed = await run("failed.exit", "false");
+		out.trapKeepsStatus = await run("trap.exit", "set -e; false; echo unreachable");
 		break;
 	}
-	case "output-wait": {
-		const id = await registry.nextId();
-		const record = await registry.recordCreate(id, "watcher", root, "watcher", process.pid);
-		const { appendFile } = await import("node:fs/promises");
-		if (payload.appendAfterMs) {
-			setTimeout(() => {
-				appendFile(`${root}/${id}.log`, payload.appendText ?? "woken", "utf8").catch(() => {});
-			}, payload.appendAfterMs);
-		}
-		const t0 = Date.now();
-		const readSnapshot = async () => {
-			await registry.refreshFromJournal();
-			const live = registry.get(id);
-			const log = await registry.readLog(id);
-			const buffer = log ?? Buffer.alloc(0);
-			return { cursor: live.logBase + buffer.length, state: live.state, exitCode: live.exitCode, log: buffer, record: live };
+	case "wait-until": {
+		const { waitUntil } = await import("../extensions/tasks.ts");
+		const mode = payload.mode;
+		let calls = 0;
+		const started = Date.now();
+		const controller = new AbortController();
+		if (mode === "abort") setTimeout(() => controller.abort(), payload.abortAfterMs ?? 100);
+		const done = async () => {
+			calls += 1;
+			return mode === "instant" || (mode === "flip" && Date.now() - started >= (payload.delayMs ?? 250));
 		};
-		const { pollForProgress, readRange } = await import("../extensions/tasks.ts");
-		const first = await readSnapshot();
-		const outcome = await pollForProgress(readSnapshot, first.cursor, payload.waitMs ?? 3000, undefined, 50);
-		const final = await readSnapshot();
-		const range = readRange(final.record, final.log, first.cursor);
-		out.result = { changed: outcome.changed, waitedMs: outcome.waitedMs, content: range.content, elapsedMs: Date.now() - t0 };
+		const waitedMs = await waitUntil(done, payload.waitMs ?? 400, mode === "abort" ? controller.signal : undefined, payload.intervalMs ?? 50);
+		out.result = { waitedMs, calls };
 		break;
 	}
 	case "factory-e2e": {
-		const { default: factory } = await import("../extensions/tasks.ts");
-		const tools = {};
-		const handlers = {};
-		const sent = [];
-		let idle = payload.startIdle ?? true;
-		const pi = {
-			on: (event, handler) => {
-				handlers[event] = handler;
-			},
-			registerTool: (tool) => {
-				tools[tool.name] = tool;
-			},
-			registerCommand: () => {},
-			sendMessage: (message) => {
-				sent.push(message.content);
-			},
-		};
-		await factory(pi);
-		const ctx = { cwd: root, sessionManager: { getBranch: () => [] }, isIdle: () => idle };
-		await handlers["session_start"]({}, ctx);
+		const { tools, handlers, sent, ctx, idle } = await bootFactory();
 		const created = await tools.task_create.execute("t1", { cmd: payload.cmd ?? "exit 42" }, undefined, undefined, ctx);
 		const id = created.details.id;
-		const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 		await settle(payload.firstWaitMs ?? 3500);
-		const listed = await tools.task_list.execute("t2", {}, undefined, undefined, ctx);
-		out.listText = listed.content[0].text;
+		const listed = await tools.bg_list.execute("t2", { kind: "task" }, undefined, undefined, ctx);
+		out.listText = text(listed);
 		if (payload.notifyPhases) {
 			sent.length = 0;
-			idle = false;
+			idle.value = false;
 			await handlers["agent_start"]({}, ctx);
 			const duringRun = await tools.task_create.execute("t3", { cmd: "exit 3" }, undefined, undefined, ctx);
 			await settle(3000);
@@ -268,7 +279,7 @@ switch (scenario) {
 			const duringMaintenance = await tools.task_create.execute("t4", { cmd: "exit 4" }, undefined, undefined, ctx);
 			await settle(3000);
 			out.maintenanceSentCount = sent.length;
-			idle = true;
+			idle.value = true;
 			await settle(3000);
 			out.flushedSentCount = sent.length;
 			out.flushedText = sent[0] ?? null;
@@ -279,33 +290,11 @@ switch (scenario) {
 		break;
 	}
 	case "factory-two-sessions": {
-		const { default: factory, isSubagentSessionName } = await import("../extensions/tasks.ts");
+		const { isSubagentSessionName } = await import("../extensions/tasks.ts");
 		const { mkdirSync } = await import("node:fs");
 		mkdirSync(root, { recursive: true });
-		const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-		const boot = async (sessionName) => {
-			const tools = {};
-			const handlers = {};
-			const sent = [];
-			const pi = {
-				on: (event, handler) => {
-					handlers[event] = handler;
-				},
-				registerTool: (tool) => {
-					tools[tool.name] = tool;
-				},
-				registerCommand: () => {},
-				sendMessage: (message) => {
-					sent.push(message.content);
-				},
-			};
-			await factory(pi);
-			const ctx = { cwd: root, sessionManager: { getBranch: () => [], getSessionName: () => sessionName }, isIdle: () => true };
-			await handlers["session_start"]({}, ctx);
-			return { tools, handlers, sent, ctx };
-		};
-		const parent = await boot("main session");
-		const child = await boot("general-purpose#1a2b3c4d");
+		const parent = await bootFactory();
+		const child = await bootFactory({ sessionName: "general-purpose#1a2b3c4d" });
 		const parentOwned = await parent.tools.task_create.execute("p1", { cmd: "sleep 1; exit 7", name: "parent-owned" }, undefined, undefined, parent.ctx);
 		await settle(4500);
 		const viewer = new TaskRegistry();
@@ -314,8 +303,8 @@ switch (scenario) {
 		out.parentSent = parent.sent.filter((text) => text.includes(parentOwned.details.id));
 		out.childSent = child.sent.slice();
 		out.recordedExitCode = viewer.get(parentOwned.details.id).exitCode;
-		const childList = await child.tools.task_list.execute("c0", {}, undefined, undefined, child.ctx);
-		out.childSeesParentTask = childList.content[0].text.includes(parentOwned.details.id);
+		const childList = await child.tools.bg_list.execute("c0", { kind: "task" }, undefined, undefined, child.ctx);
+		out.childSeesParentTask = text(childList).includes(parentOwned.details.id);
 		child.sent.length = 0;
 		const childOwned = await child.tools.task_create.execute("c1", { cmd: "exit 9", name: "child-owned" }, undefined, undefined, child.ctx);
 		await settle(3500);
@@ -325,10 +314,78 @@ switch (scenario) {
 		await child.handlers["session_shutdown"]?.();
 		break;
 	}
+	case "factory-bg-flow": {
+		const { tools, handlers, ctx } = await bootFactory();
+		const created = await tools.task_create.execute("t1", { cmd: "sleep 1; echo FLOW_MARK; exit 6", name: "flow" }, undefined, undefined, ctx);
+		const handle = `task:${created.details.id}`;
+		const status = await tools.bg_status.execute("t2", { handle }, undefined, undefined, ctx);
+		out.running = text(status);
+		out.runningState = status.details.state;
+		const log = await tools.bg_log.execute("t3", { handle }, undefined, undefined, ctx);
+		out.logCursor = log.details.cursor;
+		out.logState = log.details.state;
+		const waited = await tools.bg_status.execute("t4", { handle, wait: 10 }, undefined, undefined, ctx);
+		out.waitedText = text(waited);
+		out.waitedMs = waited.details.waitedMs;
+		out.waitedState = waited.details.state;
+		out.waitedCode = waited.details.exitCode;
+		const final = await tools.bg_log.execute("t5", { handle }, undefined, undefined, ctx);
+		out.finalText = text(final);
+		out.finalCursor = final.details.cursor;
+		const again = await tools.bg_log.execute("t6", { handle, since: final.details.cursor }, undefined, undefined, ctx);
+		out.againText = text(again);
+		const stopped = await tools.bg_stop.execute("t7", { handle }, undefined, undefined, ctx);
+		out.stopText = text(stopped);
+		const bad = await tools.bg_status.execute("t8", { handle: "nope" }, undefined, undefined, ctx);
+		out.badText = text(bad);
+		out.badIsError = bad.isError === true;
+		const missing = await tools.bg_log.execute("t9", { handle: "task:20990101000000-9" }, undefined, undefined, ctx);
+		out.missingIsError = missing.isError === true;
+		const listed = await tools.bg_list.execute("t10", {}, undefined, undefined, ctx);
+		out.listText = text(listed);
+		out.listIsError = listed.isError === true;
+		out.names = Object.keys(tools).sort();
+		await handlers["session_shutdown"]?.();
+		break;
+	}
+	case "factory-bg-log-cap": {
+		const { tools, handlers, ctx } = await bootFactory();
+		const created = await tools.task_create.execute("c1", { cmd: "head -c 20000 /dev/zero | tr '\\0' a; echo; echo TAIL_MARK", name: "big" }, undefined, undefined, ctx);
+		const handle = `task:${created.details.id}`;
+		const waited = await tools.bg_status.execute("c2", { handle, wait: 10 }, undefined, undefined, ctx);
+		out.state = waited.details.state;
+		const split = (result) => {
+			const body = text(result);
+			const cut = body.lastIndexOf("\n");
+			return { content: body.slice(0, cut), protocol: body.slice(cut + 1), details: result.details };
+		};
+		const tail = split(await tools.bg_log.execute("c3", { handle }, undefined, undefined, ctx));
+		out.tail = { len: Buffer.byteLength(tail.content, "utf8"), ends: tail.content.endsWith("TAIL_MARK\n"), protocol: tail.protocol };
+		const full = split(await tools.bg_log.execute("c4", { handle, since: 0 }, undefined, undefined, ctx));
+		out.full = { len: Buffer.byteLength(full.content, "utf8"), protocol: full.protocol };
+		out.again = text(await tools.bg_log.execute("c5", { handle, since: tail.details.cursor }, undefined, undefined, ctx));
+		await handlers["session_shutdown"]?.();
+		break;
+	}
+	case "factory-reload-exit-code": {
+		const first = await bootFactory();
+		const created = await first.tools.task_create.execute("r1", { cmd: "sleep 1; exit 7", name: "reload-probe" }, undefined, undefined, first.ctx);
+		await first.handlers["session_shutdown"]?.();
+		const second = await bootFactory();
+		const waited = await second.tools.bg_status.execute("r2", { handle: `task:${created.details.id}`, wait: 10 }, undefined, undefined, second.ctx);
+		out.state = waited.details.state;
+		out.code = waited.details.exitCode;
+		out.text = text(waited);
+		await settle(2500);
+		const viewer = new TaskRegistry();
+		await viewer.ensureLoaded();
+		out.journalCode = viewer.get(created.details.id).exitCode;
+		out.listed = text(await second.tools.bg_list.execute("r3", { kind: "task" }, undefined, undefined, second.ctx));
+		await second.handlers["session_shutdown"]?.();
+		break;
+	}
 	default:
 		throw new Error(`unknown scenario: ${scenario}`);
 }
 
 console.log(JSON.stringify(out));
-
-

@@ -130,8 +130,8 @@ def lint(pi: str, package_root: Path) -> list[str]:
     if "后台任务结束" not in third or MARKER not in third:
         problems.append(f"回合进行中(模型未轮询)通知没有送达第 3 次请求: 末尾消息 {third[-300:]!r}")
     called = [call["function"]["name"] for request in requests for message in request["messages"] if message.get("role") == "assistant" for call in message.get("tool_calls") or []]
-    if "task_output" in called:
-        problems.append("脚本化模型不应轮询,却出现了 task_output")
+    if {"bg_log", "bg_status"} & set(called):
+        problems.append(f"脚本化模型不应轮询,却出现了 bg_log / bg_status")
     return problems
 
 

@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const BLOCK_REASON =
-	"后台化命令被拦截（用户令：不允许后台运行完成不通报的 task）。长任务请改用 task_create——退出即通知会话并附尾部日志；跟踪进度用 task_output/task_list。";
+	"后台化命令被拦截（用户令：不允许后台运行完成不通报的 task）。长任务请改用 task_create——退出即通知会话并附尾部日志；跟踪用 bg_list / bg_status，读输出用 bg_log。";
 
 const COMMAND_POSITION_BACKGROUND =
 	/(?:^|[;&|(`\n]\s*)(?:env\s+[A-Za-z_][A-Za-z0-9_]*=\S*\s+)?(?:nohup|setsid|disown)\b/;
